@@ -51,10 +51,28 @@ class _ThreadListScreenState extends State<ThreadListScreen> {
   Map<String, ConversationAnnotation> _annotations = const {};
   ContactsSnapshot _contacts = ContactsSnapshot.empty;
 
+  bool _searching = false;
+  String _query = '';
+  final TextEditingController _searchController = TextEditingController();
+
   @override
   void initState() {
     super.initState();
     _load();
+  }
+
+  @override
+  void dispose() {
+    _searchController.dispose();
+    super.dispose();
+  }
+
+  void _stopSearch() {
+    setState(() {
+      _searching = false;
+      _query = '';
+      _searchController.clear();
+    });
   }
 
   Future<void> _load() async {
@@ -149,32 +167,74 @@ class _ThreadListScreenState extends State<ThreadListScreen> {
     // Tabs: "All" plus one per category. Keyed so the controller rebuilds when
     // the category set changes.
     final tabs = ['All', ..._categories.map((c) => c.name)];
+    final ready = !_loading && _error == null;
     return DefaultTabController(
       key: ValueKey(_categories.map((c) => c.id).join(',')),
       length: tabs.length,
-      child: Scaffold(
-        appBar: AppBar(
-          title: const Text('Chats'),
-          actions: [
-            IconButton(
-              tooltip: 'Manage categories',
-              icon: const Icon(Icons.folder_outlined),
-              onPressed: _openManageCategories,
-            ),
-            IconButton(
-              tooltip: 'Refresh',
-              icon: const Icon(Icons.refresh),
-              onPressed: _load,
-            ),
-          ],
-          bottom: _loading || _error != null
-              ? null
-              : TabBar(
-                  isScrollable: true,
-                  tabs: [for (final t in tabs) Tab(text: t)],
-                ),
+      child: PopScope(
+        canPop: !_searching,
+        onPopInvokedWithResult: (didPop, _) {
+          if (!didPop) _stopSearch();
+        },
+        child: Scaffold(
+          appBar: AppBar(
+            leading: _searching
+                ? IconButton(
+                    tooltip: 'Close search',
+                    icon: const Icon(Icons.arrow_back),
+                    onPressed: _stopSearch,
+                  )
+                : null,
+            title: _searching
+                ? TextField(
+                    controller: _searchController,
+                    autofocus: true,
+                    decoration: const InputDecoration(
+                      hintText: 'Search name, number, note, message…',
+                      border: InputBorder.none,
+                    ),
+                    onChanged: (v) => setState(() => _query = v),
+                  )
+                : const Text('Chats'),
+            actions: _searching
+                ? [
+                    if (_query.isNotEmpty)
+                      IconButton(
+                        tooltip: 'Clear',
+                        icon: const Icon(Icons.close),
+                        onPressed: () {
+                          _searchController.clear();
+                          setState(() => _query = '');
+                        },
+                      ),
+                  ]
+                : [
+                    if (ready)
+                      IconButton(
+                        tooltip: 'Search',
+                        icon: const Icon(Icons.search),
+                        onPressed: () => setState(() => _searching = true),
+                      ),
+                    IconButton(
+                      tooltip: 'Manage categories',
+                      icon: const Icon(Icons.folder_outlined),
+                      onPressed: _openManageCategories,
+                    ),
+                    IconButton(
+                      tooltip: 'Refresh',
+                      icon: const Icon(Icons.refresh),
+                      onPressed: _load,
+                    ),
+                  ],
+            bottom: _searching || !ready
+                ? null
+                : TabBar(
+                    isScrollable: true,
+                    tabs: [for (final t in tabs) Tab(text: t)],
+                  ),
+          ),
+          body: _buildBody(),
         ),
-        body: _buildBody(),
       ),
     );
   }
@@ -198,12 +258,91 @@ class _ThreadListScreenState extends State<ThreadListScreen> {
         ),
       );
     }
+    if (_searching) return _searchView();
     return TabBarView(
       children: [
         _allView(),
         for (final c in _categories) _categoryView(c),
       ],
     );
+  }
+
+  /// Flat, cross-tab results while searching: matching group chats first, then
+  /// matching conversations. Matches name/number/nickname/note/message text.
+  Widget _searchView() {
+    final q = _query.trim().toLowerCase();
+    if (q.isEmpty) {
+      return const Center(
+        child: Padding(
+          padding: EdgeInsets.all(24),
+          child: Text(
+            'Search by name, number, nickname, note, or message text.',
+            textAlign: TextAlign.center,
+          ),
+        ),
+      );
+    }
+    final qDigits = _query.replaceAll(RegExp(r'\D'), '');
+    final groupChats = [
+      for (final c in _categories)
+        for (final gc in _groupChatsByCategory[c.id] ?? const <GroupChat>[])
+          if (_groupChatMatches(gc, c, q, qDigits)) (gc, c),
+    ]..sort((a, b) => a.$1.name.toLowerCase().compareTo(b.$1.name.toLowerCase()));
+    final threads = [
+      for (final t in _threads)
+        if (_threadMatches(t, q, qDigits)) t,
+    ];
+    if (groupChats.isEmpty && threads.isEmpty) {
+      return Center(
+        child: Padding(
+          padding: const EdgeInsets.all(24),
+          child: Text('No matches for “${_query.trim()}”.',
+              textAlign: TextAlign.center),
+        ),
+      );
+    }
+    return ListView(
+      children: [
+        if (groupChats.isNotEmpty) ...[
+          _subheader('Group chats'),
+          for (final (gc, category) in groupChats)
+            _groupChatTile(gc, category, showCategory: true),
+        ],
+        if (threads.isNotEmpty) ...[
+          if (groupChats.isNotEmpty) _subheader('Conversations'),
+          for (final t in threads) _threadTile(t),
+        ],
+      ],
+    );
+  }
+
+  bool _threadMatches(MessageThread t, String q, String qDigits) {
+    final ann = _annotations[t.participantKey];
+    final hay = StringBuffer()
+      ..write(_contacts.titleFor(t))
+      ..write(' ')
+      ..write(t.participants.join(' '));
+    if (ann?.name != null) hay.write(' ${ann!.name}');
+    if (ann?.note != null) hay.write(' ${ann!.note}');
+    final body = t.latest?.body;
+    if (body != null) hay.write(' $body');
+    if (hay.toString().toLowerCase().contains(q)) return true;
+    if (qDigits.isNotEmpty &&
+        t.participants.map(normalizePhone).join(' ').contains(qDigits)) {
+      return true;
+    }
+    return false;
+  }
+
+  bool _groupChatMatches(GroupChat gc, Category cat, String q, String qDigits) {
+    final names =
+        gc.members.map((m) => _contacts.nameForPhone(m) ?? m).join(' ');
+    final text = '${gc.name} ${cat.name} $names'.toLowerCase();
+    if (text.contains(q)) return true;
+    if (qDigits.isNotEmpty && gc.members.join(' ').contains(qDigits)) {
+      return true;
+    }
+    return false;
   }
 
   /// The "All" tab: every saved group chat (across all categories) first, then
