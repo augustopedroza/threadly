@@ -1,8 +1,8 @@
 /// User-defined, app-managed bucket of people (e.g. "LDS").
 ///
 /// A category classifies conversations — both individual chats and group chats.
-/// Distinct from an SMS group chat and from a Contacts label: a category lives
-/// only in this app's local store and collects people by phone number.
+/// Distinct from an SMS group chat: a category lives only in this app's local
+/// store and collects people by phone number.
 class Category {
   final int id;
   final String name;
@@ -31,7 +31,7 @@ class GroupChat {
 
 /// Per-conversation annotation: an ad-hoc color and/or a free-text note.
 ///
-/// Independent of categories and Contacts labels. Keyed by [MessageThread.participantKey].
+/// Independent of categories. Keyed by [MessageThread.participantKey].
 class ConversationAnnotation {
   final String threadKey;
 
@@ -62,7 +62,7 @@ typedef Person = ({String phone, String display});
 String pluralPeople(int n) => n == 1 ? '1 person' : '$n people';
 
 /// A small fixed palette so colors stay consistent and pickable.
-const List<int> kLabelPalette = [
+const List<int> kColorPalette = [
   0xFFE53935, // red
   0xFFFB8C00, // orange
   0xFFFDD835, // yellow

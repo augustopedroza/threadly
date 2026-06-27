@@ -12,8 +12,8 @@ import '../models/category.dart';
 /// installs — the user-facing concept was renamed to "category", but renaming
 /// the tables would require a migration. These names are internal only.
 ///
-/// Contacts labels are NOT stored here — those live in the Android Contacts
-/// provider (see ContactsLabels). This store is purely app-owned data.
+/// This store is purely app-owned data; contact names are read separately from
+/// the Android Contacts provider (see ContactsService).
 class OrganizerStore {
   Database? _db;
 

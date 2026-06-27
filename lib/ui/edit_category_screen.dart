@@ -129,7 +129,7 @@ class _EditCategoryScreenState extends State<EditCategoryScreen> {
             spacing: 8,
             runSpacing: 8,
             children: [
-              for (final c in kLabelPalette)
+              for (final c in kColorPalette)
                 GestureDetector(
                   onTap: () => setState(() => _color = c),
                   child: Container(

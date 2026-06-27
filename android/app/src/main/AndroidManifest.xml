@@ -3,9 +3,8 @@
          native Messages app via the sms: deep link, so no SEND_SMS needed. -->
     <uses-permission android:name="android.permission.READ_SMS"/>
     <uses-permission android:name="android.permission.RECEIVE_SMS"/>
-    <!-- Read + write contact "labels" (Android contact groups) from the app. -->
+    <!-- Read contact names to show over phone numbers (read-only). -->
     <uses-permission android:name="android.permission.READ_CONTACTS"/>
-    <uses-permission android:name="android.permission.WRITE_CONTACTS"/>
 
     <application
         android:label="ChatOrganizer"

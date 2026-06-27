@@ -1,7 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:permission_handler/permission_handler.dart';
 
-import 'data/contact_labels.dart';
+import 'data/contacts.dart';
 import 'data/organizer_store.dart';
 import 'data/sms_source.dart';
 import 'messaging.dart';
@@ -38,7 +38,7 @@ class ThreadListScreen extends StatefulWidget {
 class _ThreadListScreenState extends State<ThreadListScreen> {
   final SmsSource _source = AndroidSmsSource();
   final OrganizerStore _store = OrganizerStore();
-  final ContactsLabelService _contactsService = ContactsLabelService();
+  final ContactsService _contactsService = ContactsService();
 
   bool _loading = true;
   String? _error;
@@ -293,7 +293,6 @@ class _ThreadListScreenState extends State<ThreadListScreen> {
       for (final c in _categories)
         if (_categoryIdsFor(t).contains(c.id)) c,
     ];
-    final labelNames = _contacts.labelsForThread(t);
     final hasName = ann?.name?.isNotEmpty == true;
     final subtitleLines = <Widget>[
       if (hasName)
@@ -311,7 +310,7 @@ class _ThreadListScreenState extends State<ThreadListScreen> {
             ? const TextStyle(fontStyle: FontStyle.italic)
             : null,
       ),
-      if (categoryChips.isNotEmpty || labelNames.isNotEmpty)
+      if (categoryChips.isNotEmpty)
         Padding(
           padding: const EdgeInsets.only(top: 4),
           child: Wrap(
@@ -320,14 +319,12 @@ class _ThreadListScreenState extends State<ThreadListScreen> {
             children: [
               for (final c in categoryChips)
                 _MiniChip(label: c.name, color: Color(c.color)),
-              for (final l in labelNames) _MiniChip(label: l, outlined: true),
             ],
           ),
         ),
     ];
     return ListTile(
-      isThreeLine:
-          hasName || categoryChips.isNotEmpty || labelNames.isNotEmpty,
+      isThreeLine: hasName || categoryChips.isNotEmpty,
       leading: CircleAvatar(
         backgroundColor: ann?.color != null ? Color(ann!.color!) : null,
         child: Icon(
@@ -351,7 +348,6 @@ class _ThreadListScreenState extends State<ThreadListScreen> {
         builder: (_) => ThreadScreen(
           thread: t,
           store: _store,
-          contactsService: _contactsService,
           categories: _categories,
           threadCategoryIds: _categoryIdsFor(t),
           annotation: _annotations[t.participantKey],
@@ -366,24 +362,20 @@ class _ThreadListScreenState extends State<ThreadListScreen> {
 class _MiniChip extends StatelessWidget {
   final String label;
   final Color? color;
-  final bool outlined;
-  const _MiniChip({required this.label, this.color, this.outlined = false});
+  const _MiniChip({required this.label, this.color});
 
   @override
   Widget build(BuildContext context) {
     return Container(
       padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 2),
       decoration: BoxDecoration(
-        color: outlined ? null : (color ?? Colors.grey).withValues(alpha: 0.18),
-        border: outlined
-            ? Border.all(color: Theme.of(context).colorScheme.outline)
-            : null,
+        color: (color ?? Colors.grey).withValues(alpha: 0.18),
         borderRadius: BorderRadius.circular(10),
       ),
       child: Row(
         mainAxisSize: MainAxisSize.min,
         children: [
-          if (!outlined && color != null)
+          if (color != null)
             Padding(
               padding: const EdgeInsets.only(right: 4),
               child: CircleAvatar(radius: 4, backgroundColor: color),
@@ -396,11 +388,10 @@ class _MiniChip extends StatelessWidget {
 }
 
 /// A single conversation: messages, the native-app handoff, and the Organize
-/// editor (color/note, categories, Contacts labels).
+/// editor (nickname/color/note, categories).
 class ThreadScreen extends StatelessWidget {
   final MessageThread thread;
   final OrganizerStore store;
-  final ContactsLabelService contactsService;
   final List<Category> categories;
   final Set<int> threadCategoryIds;
   final ConversationAnnotation? annotation;
@@ -411,7 +402,6 @@ class ThreadScreen extends StatelessWidget {
     super.key,
     required this.thread,
     required this.store,
-    required this.contactsService,
     required this.categories,
     required this.threadCategoryIds,
     required this.annotation,
@@ -424,7 +414,6 @@ class ThreadScreen extends StatelessWidget {
       context,
       thread: thread,
       store: store,
-      contactsService: contactsService,
       categories: categories,
       threadCategoryIds: threadCategoryIds,
       annotation: annotation,

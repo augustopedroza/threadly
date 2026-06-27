@@ -5,9 +5,10 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 ## What this is
 
 **ChatOrganizer** — a Flutter Android app that is a "thin layer" over the user's existing texts.
-It reads SMS conversations and lets the user **organize** them (categories, custom names, colors,
-notes, contact labels, saved group-chat rosters), then **hands off to the native Messages app** for
-all sending. The pitch: organize here, send/read in the app you already use.
+It reads SMS conversations and lets the user **organize** them (categories, custom nicknames, colors,
+notes, saved group-chat rosters), then **hands off to the native Messages app** for all sending. It
+also reads contact names (read-only) to show them over raw numbers. The pitch: organize here,
+send/read in the app you already use.
 
 Currently **Android-only**. The iOS path is designed-for but not built (see "The defining
 constraint").
@@ -34,22 +35,23 @@ alone via `another_telephony`. `AndroidSmsSource` derives participants from inco
 grouped by `THREAD_ID`. Escalating to a custom MMS content-provider query or becoming the default
 SMS app remains an open decision gate.
 
-## Three separate "grouping" concepts — do not conflate
+## Two "grouping" concepts — do not conflate
 
-The app has three independent ways to associate people, and mixing them up causes bugs:
+The app has two app-owned ways to associate people, both stored in its own SQLite DB:
 
-1. **Category** (`models/category.dart` `Category`) — an app-local bucket of people (e.g. "LDS",
-   "U17 Team"). Classifies both individual and group conversations. Lives only in this app's SQLite
-   store. Members are phone numbers.
+1. **Category** (`models/category.dart` `Category`) — a bucket of people (e.g. "LDS", "U17 Team").
+   Classifies both individual and group conversations and **drives the tabs**. Members are phone
+   numbers.
 2. **Group chat** (`GroupChat`) — a named, saved roster of people *under a category* (e.g. "U17
-   Parents Carpool"). Also app-local. Launchable as a native group text. **Not** an SMS thread.
-3. **Contacts label** (`data/contact_labels.dart`) — a real Android contact group, synced to Google
-   Contacts (read+write via `flutter_contacts`). Lives in the OS Contacts provider, **not** in this
-   app's store.
+   Parents Carpool"). Launchable as a native group text. **Not** an SMS thread.
 
-Plus **conversation annotations** (`ConversationAnnotation`): per-thread custom name, color, and
-note, keyed by `MessageThread.participantKey`. The custom name shows as a *subtitle* — it does
-**not** replace the phone-number title (deliberate, per user feedback).
+Plus **conversation annotations** (`ConversationAnnotation`): per-thread custom **nickname**, color,
+and note, keyed by `MessageThread.participantKey`. The nickname shows as a *subtitle* — it does
+**not** replace the title (deliberate, per user feedback).
+
+Contact **labels** (Android contact groups) were intentionally removed: they're account-bound (fail
+on accountless devices) and only duplicated what categories already do better. Contacts are now
+**read-only**, used solely to resolve a phone number to a display name (`data/contacts.dart`).
 
 ## Architecture
 
@@ -69,8 +71,8 @@ interfaces so iOS can be slotted in without touching the UI.
   "category" in the UI but the tables weren't migrated. These names are internal only; do not
   surface "grouping" in UI. `createCategory` is **idempotent by name** (case-insensitive) so adding
   a member never spawns a duplicate category.
-- `lib/data/contact_labels.dart` — `ContactsLabelService` + immutable `ContactsSnapshot`, the
-  Contacts-provider read/write side (labels = contact groups).
+- `lib/data/contacts.dart` — `ContactsService` + immutable `ContactsSnapshot`, the read-only
+  Contacts-provider side: maps normalized phone → contact display name (`nameForPhone`, `titleFor`).
 - `lib/messaging.dart` — the handoff: `openSmsCompose(recipients, {body})` builds the `sms:` URI;
   `launchGroupText(context, recipients)` warns first if `recipients.length > kGroupTextWarnLimit`
   (20, a soft MMS cap) then composes.
@@ -88,8 +90,8 @@ interfaces so iOS can be slotted in without touching the UI.
 `name` column to `conversation_annotations`. **Bump `version` and add an `onUpgrade` branch for any
 schema change** — existing installs carry real user data.
 
-Android permissions (`READ_SMS`/`RECEIVE_SMS`/`READ_CONTACTS`/`WRITE_CONTACTS`, **no SEND_SMS**) and
-the `sms:` `<queries>` entry live in `android/app/src/main/AndroidManifest.xml`. The Android
+Android permissions (`READ_SMS`/`RECEIVE_SMS`/`READ_CONTACTS`, **no SEND_SMS, no WRITE_CONTACTS**)
+and the `sms:` `<queries>` entry live in `android/app/src/main/AndroidManifest.xml`. The Android
 `applicationId` is still `com.augusto.group_chat` (kept through the rename so installs/data persist
 — do not change it).
 
@@ -113,8 +115,8 @@ flutter build apk --debug       # verify the full Android native stack compiles
 pass. The unit tests cover only the pure-Dart model (`test/widget_test.dart`); everything
 platform-bound is verified by running the app.
 
-A **plugged-in Android device or emulator** is required to exercise the SMS read path, the Contacts
-label sync, and the `sms:` handoff — macOS/Chrome/iOS targets can't. Note an **emulator quirk**:
-`flutter_contacts` `getAll()` returns 0 for adb-seeded null-account contacts, so contact-label
-features look empty on a fresh emulator even when wired correctly. The app's own SQLite-backed
-organizing (categories, names, colors, group chats) works fully on an emulator with seeded SMS.
+A **plugged-in Android device or emulator** is required to exercise the SMS read path, contact-name
+resolution, and the `sms:` handoff — macOS/Chrome/iOS targets can't. Note an **emulator quirk**:
+contact groups can't be created on an accountless emulator (Android groups are account-bound) — this
+is partly why contact labels were dropped. The app's own SQLite-backed organizing (categories,
+nicknames, colors, group chats) works fully on an emulator with seeded SMS, no account needed.
