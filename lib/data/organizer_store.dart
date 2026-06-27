@@ -316,17 +316,18 @@ class OrganizerStore {
 
   // --- Pending groups ----------------------------------------------------
 
-  /// Remember a name/category for a group the user just started in the native
-  /// app, to apply when that conversation first appears. [members] are
+  /// Remember a group the user just started in the native app. It shows in the
+  /// list as a launchable placeholder and carries an optional name/category, all
+  /// applied to the real conversation once it first appears. [members] are
   /// normalized phones.
   Future<void> createPendingGroup({
     String? name,
     int? categoryId,
     required List<String> members,
   }) async {
+    if (members.isEmpty) return;
     final db = await _database;
     final cleanName = (name != null && name.trim().isNotEmpty) ? name.trim() : null;
-    if (cleanName == null && categoryId == null) return; // nothing to remember
     await db.insert('pending_groups', {
       'name': cleanName,
       'category_id': categoryId,

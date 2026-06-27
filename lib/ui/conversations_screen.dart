@@ -37,6 +37,8 @@ class _ConversationsScreenState extends State<ConversationsScreen>
   Map<int, Set<String>> _memberships = const {};
   Map<String, ConversationAnnotation> _annotations = const {};
   ContactsSnapshot _contacts = ContactsSnapshot.empty;
+  List<({int id, String? name, int? categoryId, List<String> members})>
+      _pendingGroups = const [];
 
   bool _searching = false;
   String _query = '';
@@ -95,10 +97,12 @@ class _ConversationsScreenState extends State<ConversationsScreen>
         ? await _notifs.conversations()
         : const <Conversation>[];
     final categories = await _store.categories();
-    // Apply any pending group names/categories to groups that have now appeared.
+    // Apply any pending group names/categories to groups that have now appeared
+    // (which also removes the placeholder for that group).
     if (granted && conversations.isNotEmpty) {
       await _applyPendingGroups(conversations, contacts);
     }
+    final pendingGroups = await _store.pendingGroups();
     final memberships = await _store.allMemberships();
     final annotations = await _store.allAnnotations();
     if (!mounted) return;
@@ -107,6 +111,7 @@ class _ConversationsScreenState extends State<ConversationsScreen>
       _contacts = contacts;
       _conversations = conversations;
       _categories = categories;
+      _pendingGroups = pendingGroups;
       _memberships = memberships;
       _annotations = annotations;
       _loading = false;
@@ -240,7 +245,7 @@ class _ConversationsScreenState extends State<ConversationsScreen>
   Widget _body() {
     if (_loading) return const Center(child: CircularProgressIndicator());
     if (!_granted) return _onboarding();
-    if (_conversations.isEmpty) {
+    if (_conversations.isEmpty && _pendingGroups.isEmpty) {
       return const Center(
         child: Padding(
           padding: EdgeInsets.all(24),
@@ -254,8 +259,25 @@ class _ConversationsScreenState extends State<ConversationsScreen>
     }
     return TabBarView(
       children: [
-        _list(_conversations),
-        for (final c in _categories) _list(_forCategory(c.id)),
+        _tab(_conversations, null),
+        for (final c in _categories) _tab(_forCategory(c.id), c.id),
+      ],
+    );
+  }
+
+  /// A tab: groups you started (placeholders) first, then conversations. When
+  /// [categoryId] is non-null, only that category's pending groups show.
+  Widget _tab(List<Conversation> convos, int? categoryId) {
+    final pending = categoryId == null
+        ? _pendingGroups
+        : [for (final p in _pendingGroups) if (p.categoryId == categoryId) p];
+    if (pending.isEmpty && convos.isEmpty) {
+      return const Center(child: Text('No conversations here.'));
+    }
+    return ListView(
+      children: [
+        for (final pg in pending) _pendingTile(pg),
+        for (final c in convos) _tile(c),
       ],
     );
   }
@@ -464,6 +486,98 @@ class _ConversationsScreenState extends State<ConversationsScreen>
   String? _numberFromTitle(String title) {
     final digits = title.replaceAll(RegExp(r'\D'), '');
     return digits.length >= 7 ? title : null;
+  }
+
+  /// A group the user started that hasn't received a message yet (so it has no
+  /// real conversation). Shown as a launchable placeholder until it appears.
+  Widget _pendingTile(
+      ({int id, String? name, int? categoryId, List<String> members}) pg) {
+    final title = (pg.name != null && pg.name!.isNotEmpty)
+        ? pg.name!
+        : pg.members.map((m) => _contacts.nameForPhone(m) ?? m).join(', ');
+    Category? cat;
+    for (final c in _categories) {
+      if (c.id == pg.categoryId) {
+        cat = c;
+        break;
+      }
+    }
+    final canLaunch = pg.members.isNotEmpty;
+    return ListTile(
+      isThreeLine: cat != null,
+      leading: CircleAvatar(
+        backgroundColor: cat != null ? Color(cat.color) : null,
+        child: Icon(Icons.groups, color: cat != null ? Colors.white : null),
+      ),
+      title: Row(
+        children: [
+          Expanded(
+            child: Text(title.isEmpty ? 'New group' : title,
+                maxLines: 1, overflow: TextOverflow.ellipsis),
+          ),
+          const SizedBox(width: 8),
+          Container(
+            padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 1),
+            decoration: BoxDecoration(
+              color: Theme.of(context).colorScheme.primaryContainer,
+              borderRadius: BorderRadius.circular(8),
+            ),
+            child: Text('NEW',
+                style: Theme.of(context).textTheme.labelSmall?.copyWith(
+                    color: Theme.of(context).colorScheme.onPrimaryContainer)),
+          ),
+        ],
+      ),
+      subtitle: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Text('Group you started · ${pluralPeople(pg.members.length)}'),
+          if (cat != null)
+            Padding(
+              padding: const EdgeInsets.only(top: 4),
+              child: _MiniChip(label: cat.name, color: Color(cat.color)),
+            ),
+        ],
+      ),
+      trailing: IconButton(
+        icon: const Icon(Icons.open_in_new),
+        tooltip: 'Start group text',
+        onPressed: canLaunch ? () => launchGroupText(context, pg.members) : null,
+      ),
+      onTap: canLaunch ? () => launchGroupText(context, pg.members) : null,
+      onLongPress: () => _pendingActions(pg),
+    );
+  }
+
+  Future<void> _pendingActions(
+      ({int id, String? name, int? categoryId, List<String> members}) pg) async {
+    final action = await showModalBottomSheet<String>(
+      context: context,
+      builder: (ctx) => SafeArea(
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            ListTile(
+              leading: const Icon(Icons.open_in_new),
+              title: const Text('Start group text'),
+              onTap: () => Navigator.pop(ctx, 'start'),
+            ),
+            ListTile(
+              leading: const Icon(Icons.delete_outline),
+              title: const Text('Remove from list'),
+              onTap: () => Navigator.pop(ctx, 'remove'),
+            ),
+          ],
+        ),
+      ),
+    );
+    if (!mounted || action == null) return;
+    if (action == 'start' && pg.members.isNotEmpty) {
+      await launchGroupText(context, pg.members);
+    } else if (action == 'remove') {
+      await _store.deletePendingGroup(pg.id);
+      _load();
+    }
   }
 
   Future<void> _newGroup() async {
