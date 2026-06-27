@@ -1,7 +1,9 @@
 package com.augusto.group_chat
 
+import android.app.Notification
 import android.app.PendingIntent
 import android.content.Context
+import android.os.Bundle
 import android.service.notification.NotificationListenerService
 import android.service.notification.StatusBarNotification
 import org.json.JSONObject
@@ -55,13 +57,12 @@ class ConversationNotificationListener : NotificationListenerService() {
         if (sbn.packageName != MESSAGES_PKG) return
         val n = sbn.notification ?: return
         // Skip the group-summary roll-up — it isn't a conversation.
-        if (n.flags and android.app.Notification.FLAG_GROUP_SUMMARY != 0) return
+        if (n.flags and Notification.FLAG_GROUP_SUMMARY != 0) return
         val id = conversationId(sbn) ?: return
         val extras = n.extras ?: return
-        val title = extras.getCharSequence(android.app.Notification.EXTRA_TITLE)
-            ?.toString()?.trim().orEmpty()
+
+        val (isGroup, title) = parseGroupAndTitle(extras)
         if (title.isEmpty()) return
-        val isGroup = extras.getBoolean("android.isGroupConversation", false)
 
         n.contentIntent?.let { activeIntents[id] = it }
 
@@ -73,6 +74,45 @@ class ConversationNotificationListener : NotificationListenerService() {
             .put("group", isGroup)
         convos.put(id, entry)
         store.edit().putString(KEY_CONVOS, convos.toString()).apply()
+    }
+
+    /**
+     * Decide whether a notification is a group chat and pick the best title.
+     *
+     * Google Messages sets EXTRA_TITLE to the latest *sender* even for groups,
+     * so a group can masquerade as a 1:1. We instead consult the MessagingStyle:
+     * its group flag, distinct senders, and conversation title (the group's
+     * name / participant list), which is also the better label to show.
+     */
+    @Suppress("DEPRECATION")
+    private fun parseGroupAndTitle(extras: Bundle): Pair<Boolean, String> {
+        val senderTitle = extras.getCharSequence(Notification.EXTRA_TITLE)
+            ?.toString()?.trim().orEmpty()
+        // EXTRA_CONVERSATION_TITLE = "android.conversationTitle" (API 24+).
+        val convTitle = extras.getCharSequence("android.conversationTitle")
+            ?.toString()?.trim()
+
+        // EXTRA_IS_GROUP_CONVERSATION = "android.isGroupConversation".
+        var isGroup = extras.getBoolean("android.isGroupConversation", false)
+
+        // Distinct senders from the bundled MessagingStyle history
+        // (EXTRA_MESSAGES = "android.messages"): each entry is a Bundle whose
+        // "sender" is the message author. More than one means a group.
+        val senders = HashSet<String>()
+        val messages = extras.getParcelableArray("android.messages")
+        if (messages != null) {
+            for (p in messages) {
+                val b = p as? Bundle ?: continue
+                val sender = b.getCharSequence("sender")?.toString()?.trim()
+                if (!sender.isNullOrEmpty()) senders.add(sender)
+            }
+        }
+        if (senders.size > 1) isGroup = true
+        // Google Messages doesn't set a conversation title for 1:1 chats.
+        if (!convTitle.isNullOrEmpty()) isGroup = true
+
+        val title = if (!convTitle.isNullOrEmpty()) convTitle else senderTitle
+        return Pair(isGroup, title)
     }
 
     companion object {
