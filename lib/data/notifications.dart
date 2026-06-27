@@ -23,12 +23,17 @@ class Conversation {
 
   final bool isGroup;
 
+  /// Member phone numbers harvested from the notification, when available (used
+  /// to reopen a group thread via the sms: deep link). May be empty.
+  final List<String> members;
+
   const Conversation({
     required this.id,
     required this.title,
     required this.lastActivity,
     required this.unread,
     required this.isGroup,
+    this.members = const [],
   });
 }
 
@@ -65,6 +70,10 @@ class NotificationConversationsService {
               (m['ts'] as num?)?.toInt() ?? 0),
           unread: (m['unread'] as bool?) ?? false,
           isGroup: (m['group'] as bool?) ?? false,
+          members: ((m['members'] as String?) ?? '')
+              .split(',')
+              .where((s) => s.isNotEmpty)
+              .toList(),
         ),
     ];
   }

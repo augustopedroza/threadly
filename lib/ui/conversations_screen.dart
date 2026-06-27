@@ -116,6 +116,16 @@ class _ConversationsScreenState extends State<ConversationsScreen>
     final annotations = await _store.allAnnotations();
     final reads = await _store.allReads();
     final groupRecipients = await _store.allGroupRecipients();
+    // Harvest member numbers the notification carried for groups we don't yet
+    // have, so even purely-incoming groups can be reopened via the sms: link.
+    for (final c in conversations) {
+      if (c.isGroup &&
+          c.members.isNotEmpty &&
+          (groupRecipients[c.id] == null || groupRecipients[c.id]!.isEmpty)) {
+        await _store.setGroupRecipients(c.id, c.members);
+        groupRecipients[c.id] = c.members;
+      }
+    }
     if (!mounted) return;
     setState(() {
       _granted = granted;

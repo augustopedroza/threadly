@@ -3,6 +3,7 @@ package com.augusto.group_chat
 import android.app.Notification
 import android.app.PendingIntent
 import android.content.Context
+import android.os.Build
 import android.os.Bundle
 import android.service.notification.NotificationListenerService
 import android.service.notification.StatusBarNotification
@@ -68,12 +69,48 @@ class ConversationNotificationListener : NotificationListenerService() {
 
         val store = prefs(this)
         val convos = JSONObject(store.getString(KEY_CONVOS, "{}") ?: "{}")
+        // Accumulate member numbers across notifications (a single notification
+        // may only name the latest sender), so the conversation keeps the full
+        // roster we've ever seen.
+        val members = LinkedHashSet<String>()
+        convos.optJSONObject(id)?.optString("members", "")
+            ?.split(",")?.forEach { if (it.isNotEmpty()) members.add(it) }
+        members.addAll(extractNumbers(extras))
         val entry = JSONObject()
             .put("title", title)
             .put("ts", sbn.postTime)
             .put("group", isGroup)
+            .put("members", members.joinToString(","))
         convos.put(id, entry)
         store.edit().putString(KEY_CONVOS, convos.toString()).apply()
+    }
+
+    /**
+     * Member phone numbers carried by the notification — from the legacy
+     * EXTRA_PEOPLE uri array, the EXTRA_PEOPLE_LIST [android.app.Person]s, and
+     * each message's sender Person. Only `tel:` uris yield a number (a contact
+     * `content://` uri can't be turned into a number here).
+     */
+    @Suppress("DEPRECATION")
+    private fun extractNumbers(extras: Bundle): List<String> {
+        val uris = mutableListOf<String>()
+        extras.getStringArray("android.people")?.forEach { if (it != null) uris.add(it) }
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
+            extras.getParcelableArrayList<android.app.Person>("android.people.list")
+                ?.forEach { p -> p.uri?.let { uris.add(it) } }
+            extras.getParcelableArray("android.messages")?.forEach { m ->
+                val b = m as? Bundle ?: return@forEach
+                (b.getParcelable("sender_person") as? android.app.Person)
+                    ?.uri?.let { uris.add(it) }
+            }
+        }
+        val numbers = LinkedHashSet<String>()
+        for (u in uris) {
+            if (!u.startsWith("tel:")) continue
+            val cleaned = u.removePrefix("tel:").filter { it.isDigit() || it == '+' }
+            if (cleaned.count { it.isDigit() } >= 7) numbers.add(cleaned)
+        }
+        return numbers.toList()
     }
 
     /**
@@ -160,6 +197,7 @@ class ConversationNotificationListener : NotificationListenerService() {
                         .put("ts", e.optLong("ts"))
                         .put("group", e.optBoolean("group", false))
                         .put("unread", active.contains(id))
+                        .put("members", e.optString("members", ""))
                 )
             }
             out.sortByDescending { it.optLong("ts") }
