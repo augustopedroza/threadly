@@ -6,6 +6,8 @@ import '../data/organizer_store.dart';
 import '../format.dart';
 import '../messaging.dart';
 import '../models/category.dart';
+import 'category_manager_screen.dart';
+import 'new_group_screen.dart';
 
 /// Bridge-free home: a pure organizer + launcher over Google Messages.
 ///
@@ -36,6 +38,10 @@ class _ConversationsScreenState extends State<ConversationsScreen>
   Map<String, ConversationAnnotation> _annotations = const {};
   ContactsSnapshot _contacts = ContactsSnapshot.empty;
 
+  bool _searching = false;
+  String _query = '';
+  final TextEditingController _searchController = TextEditingController();
+
   @override
   void initState() {
     super.initState();
@@ -45,8 +51,28 @@ class _ConversationsScreenState extends State<ConversationsScreen>
 
   @override
   void dispose() {
+    _searchController.dispose();
     WidgetsBinding.instance.removeObserver(this);
     super.dispose();
+  }
+
+  void _stopSearch() => setState(() {
+    _searching = false;
+    _query = '';
+    _searchController.clear();
+  });
+
+  /// Match a conversation by name, nickname, note, or category — never message
+  /// content (there is none).
+  bool _matches(Conversation c, String q) {
+    final ann = _annotations[c.id];
+    final hay = StringBuffer(c.title);
+    if (ann?.name != null) hay.write(' ${ann!.name}');
+    if (ann?.note != null) hay.write(' ${ann!.note}');
+    for (final cat in _categories) {
+      if (_categoryIdsFor(c).contains(cat.id)) hay.write(' ${cat.name}');
+    }
+    return hay.toString().toLowerCase().contains(q);
   }
 
   @override
@@ -65,7 +91,9 @@ class _ConversationsScreenState extends State<ConversationsScreen>
     } catch (_) {
       contacts = ContactsSnapshot.empty;
     }
-    final conversations = granted ? await _notifs.conversations() : const <Conversation>[];
+    final conversations = granted
+        ? await _notifs.conversations()
+        : const <Conversation>[];
     final categories = await _store.categories();
     final memberships = await _store.allMemberships();
     final annotations = await _store.allAnnotations();
@@ -82,9 +110,9 @@ class _ConversationsScreenState extends State<ConversationsScreen>
   }
 
   Set<int> _categoryIdsFor(Conversation c) => {
-        for (final cat in _categories)
-          if ((_memberships[cat.id] ?? const {}).contains(c.id)) cat.id,
-      };
+    for (final cat in _categories)
+      if ((_memberships[cat.id] ?? const {}).contains(c.id)) cat.id,
+  };
 
   List<Conversation> _forCategory(int categoryId) {
     final members = _memberships[categoryId] ?? const {};
@@ -97,24 +125,75 @@ class _ConversationsScreenState extends State<ConversationsScreen>
     return DefaultTabController(
       key: ValueKey(_categories.map((c) => c.id).join(',')),
       length: tabs.length,
-      child: Scaffold(
-        appBar: AppBar(
-          title: const Text('Chats'),
-          bottom: (!_granted || _loading)
-              ? null
-              : TabBar(
-                  isScrollable: true,
-                  tabs: [for (final t in tabs) Tab(text: t)],
-                ),
-          actions: [
-            IconButton(
-              tooltip: 'Refresh',
-              icon: const Icon(Icons.refresh),
-              onPressed: _load,
-            ),
-          ],
+      child: PopScope(
+        canPop: !_searching,
+        onPopInvokedWithResult: (didPop, _) {
+          if (!didPop) _stopSearch();
+        },
+        child: Scaffold(
+          appBar: AppBar(
+            leading: _searching
+                ? IconButton(
+                    tooltip: 'Close search',
+                    icon: const Icon(Icons.arrow_back),
+                    onPressed: _stopSearch,
+                  )
+                : null,
+            title: _searching
+                ? TextField(
+                    controller: _searchController,
+                    autofocus: true,
+                    decoration: const InputDecoration(
+                      hintText: 'Search name, nickname, note, category…',
+                      border: InputBorder.none,
+                    ),
+                    onChanged: (v) => setState(() => _query = v),
+                  )
+                : const Text('Chats'),
+            bottom: (_searching || !_granted || _loading)
+                ? null
+                : TabBar(
+                    isScrollable: true,
+                    tabs: [for (final t in tabs) Tab(text: t)],
+                  ),
+            actions: _searching
+                ? [
+                    if (_query.isNotEmpty)
+                      IconButton(
+                        tooltip: 'Clear',
+                        icon: const Icon(Icons.close),
+                        onPressed: () {
+                          _searchController.clear();
+                          setState(() => _query = '');
+                        },
+                      ),
+                  ]
+                : [
+                    if (_granted && _conversations.isNotEmpty)
+                      IconButton(
+                        tooltip: 'Search',
+                        icon: const Icon(Icons.search),
+                        onPressed: () => setState(() => _searching = true),
+                      ),
+                    IconButton(
+                      tooltip: 'New group',
+                      icon: const Icon(Icons.group_add_outlined),
+                      onPressed: _newGroup,
+                    ),
+                    IconButton(
+                      tooltip: 'Categories',
+                      icon: const Icon(Icons.folder_outlined),
+                      onPressed: _manageCategories,
+                    ),
+                    IconButton(
+                      tooltip: 'Refresh',
+                      icon: const Icon(Icons.refresh),
+                      onPressed: _load,
+                    ),
+                  ],
+          ),
+          body: _searching ? _searchView() : _body(),
         ),
-        body: _body(),
       ),
     );
   }
@@ -140,6 +219,37 @@ class _ConversationsScreenState extends State<ConversationsScreen>
         for (final c in _categories) _list(_forCategory(c.id)),
       ],
     );
+  }
+
+  Widget _searchView() {
+    final q = _query.trim().toLowerCase();
+    if (q.isEmpty) {
+      return const Center(
+        child: Padding(
+          padding: EdgeInsets.all(24),
+          child: Text(
+            'Search by name, nickname, note, or category.',
+            textAlign: TextAlign.center,
+          ),
+        ),
+      );
+    }
+    final results = [
+      for (final c in _conversations)
+        if (_matches(c, q)) c,
+    ];
+    if (results.isEmpty) {
+      return Center(
+        child: Padding(
+          padding: const EdgeInsets.all(24),
+          child: Text(
+            'No matches for “${_query.trim()}”.',
+            textAlign: TextAlign.center,
+          ),
+        ),
+      );
+    }
+    return _list(results);
   }
 
   Widget _list(List<Conversation> items) {
@@ -205,15 +315,19 @@ class _ConversationsScreenState extends State<ConversationsScreen>
     ];
     final subtitle = <Widget>[
       if (hasName)
-        Text(ann!.name!,
-            maxLines: 1,
-            overflow: TextOverflow.ellipsis,
-            style: const TextStyle(fontWeight: FontWeight.w600)),
+        Text(
+          ann!.name!,
+          maxLines: 1,
+          overflow: TextOverflow.ellipsis,
+          style: const TextStyle(fontWeight: FontWeight.w600),
+        ),
       if (hasNote)
-        Text(ann!.note!,
-            maxLines: 1,
-            overflow: TextOverflow.ellipsis,
-            style: const TextStyle(fontStyle: FontStyle.italic)),
+        Text(
+          ann!.note!,
+          maxLines: 1,
+          overflow: TextOverflow.ellipsis,
+          style: const TextStyle(fontStyle: FontStyle.italic),
+        ),
       if (chips.isNotEmpty)
         Padding(
           padding: const EdgeInsets.only(top: 4),
@@ -234,8 +348,10 @@ class _ConversationsScreenState extends State<ConversationsScreen>
         backgroundImage: photo != null ? MemoryImage(photo) : null,
         child: photo != null
             ? null
-            : Icon(c.isGroup ? Icons.groups : Icons.person,
-                color: ann?.color != null ? Colors.white : null),
+            : Icon(
+                c.isGroup ? Icons.groups : Icons.person,
+                color: ann?.color != null ? Colors.white : null,
+              ),
       ),
       title: Row(
         crossAxisAlignment: CrossAxisAlignment.baseline,
@@ -246,25 +362,29 @@ class _ConversationsScreenState extends State<ConversationsScreen>
               c.title.isEmpty ? 'Unknown' : c.title,
               maxLines: 1,
               overflow: TextOverflow.ellipsis,
-              style: unread ? const TextStyle(fontWeight: FontWeight.bold) : null,
+              style: unread
+                  ? const TextStyle(fontWeight: FontWeight.bold)
+                  : null,
             ),
           ),
           const SizedBox(width: 8),
           Text(
             formatListTime(c.lastActivity),
             style: Theme.of(context).textTheme.labelSmall?.copyWith(
-                  color: unread
-                      ? Theme.of(context).colorScheme.primary
-                      : Theme.of(context).colorScheme.onSurfaceVariant,
-                  fontWeight: unread ? FontWeight.bold : null,
-                ),
+              color: unread
+                  ? Theme.of(context).colorScheme.primary
+                  : Theme.of(context).colorScheme.onSurfaceVariant,
+              fontWeight: unread ? FontWeight.bold : null,
+            ),
           ),
         ],
       ),
       subtitle: subtitle.isEmpty
           ? null
           : Column(
-              crossAxisAlignment: CrossAxisAlignment.start, children: subtitle),
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: subtitle,
+            ),
       trailing: unread
           ? Container(
               width: 10,
@@ -286,14 +406,16 @@ class _ConversationsScreenState extends State<ConversationsScreen>
   /// contentIntent / launching Messages. Warns if nothing could be opened.
   Future<void> _open(Conversation c) async {
     if (!c.isGroup) {
-      final number = _contacts.phoneForName(c.title) ?? _numberFromTitle(c.title);
+      final number =
+          _contacts.phoneForName(c.title) ?? _numberFromTitle(c.title);
       if (number != null && await openSmsCompose([number])) return;
     }
     if (await _notifs.launch(c.id)) return;
     if (mounted) {
       ScaffoldMessenger.of(context).showSnackBar(
         const SnackBar(
-            content: Text("Couldn't open this conversation in Messages.")),
+          content: Text("Couldn't open this conversation in Messages."),
+        ),
       );
     }
   }
@@ -303,6 +425,21 @@ class _ConversationsScreenState extends State<ConversationsScreen>
   String? _numberFromTitle(String title) {
     final digits = title.replaceAll(RegExp(r'\D'), '');
     return digits.length >= 7 ? title : null;
+  }
+
+  Future<void> _newGroup() async {
+    await Navigator.of(context).push(
+      MaterialPageRoute(
+        builder: (_) => NewGroupScreen(people: _contacts.people),
+      ),
+    );
+  }
+
+  Future<void> _manageCategories() async {
+    final changed = await Navigator.of(context).push<bool>(
+      MaterialPageRoute(builder: (_) => CategoryManagerScreen(store: _store)),
+    );
+    if (changed == true) _load();
   }
 
   Future<void> _organize(Conversation c) async {
@@ -352,11 +489,6 @@ class _MiniChip extends StatelessWidget {
   }
 }
 
-const List<int> _palette = [
-  0xFF1E88E5, 0xFF43A047, 0xFFE53935, 0xFFFB8C00,
-  0xFF8E24AA, 0xFF00897B, 0xFF6D4C41, 0xFF3949AB,
-];
-
 /// Per-conversation organize editor: nickname, note, color, and category
 /// toggles. Writes to [OrganizerStore] keyed by the conversation id.
 class _OrganizeSheet extends StatefulWidget {
@@ -379,10 +511,12 @@ class _OrganizeSheet extends StatefulWidget {
 }
 
 class _OrganizeSheetState extends State<_OrganizeSheet> {
-  late final TextEditingController _name =
-      TextEditingController(text: widget.annotation?.name ?? '');
-  late final TextEditingController _note =
-      TextEditingController(text: widget.annotation?.note ?? '');
+  late final TextEditingController _name = TextEditingController(
+    text: widget.annotation?.name ?? '',
+  );
+  late final TextEditingController _note = TextEditingController(
+    text: widget.annotation?.note ?? '',
+  );
   late int? _color = widget.annotation?.color;
   late List<Category> _categories = widget.categories;
   late final Set<int> _selected = {...widget.selectedCategoryIds};
@@ -395,8 +529,7 @@ class _OrganizeSheetState extends State<_OrganizeSheet> {
   }
 
   Future<void> _toggleCategory(Category c, bool on) async {
-    await widget.store
-        .setMembership(c.id, widget.conversation.id, on);
+    await widget.store.setMembership(c.id, widget.conversation.id, on);
     setState(() => on ? _selected.add(c.id) : _selected.remove(c.id));
   }
 
@@ -413,15 +546,18 @@ class _OrganizeSheetState extends State<_OrganizeSheet> {
         ),
         actions: [
           TextButton(
-              onPressed: () => Navigator.pop(ctx), child: const Text('Cancel')),
+            onPressed: () => Navigator.pop(ctx),
+            child: const Text('Cancel'),
+          ),
           FilledButton(
-              onPressed: () => Navigator.pop(ctx, controller.text.trim()),
-              child: const Text('Create')),
+            onPressed: () => Navigator.pop(ctx, controller.text.trim()),
+            child: const Text('Create'),
+          ),
         ],
       ),
     );
     if (name == null || name.isEmpty) return;
-    final cat = await widget.store.createCategory(name, _palette.first);
+    final cat = await widget.store.createCategory(name, kColorPalette.first);
     await _toggleCategory(cat, true);
     final cats = await widget.store.categories();
     if (mounted) setState(() => _categories = cats);
@@ -441,16 +577,22 @@ class _OrganizeSheetState extends State<_OrganizeSheet> {
   Widget build(BuildContext context) {
     return Padding(
       padding: EdgeInsets.fromLTRB(
-          16, 0, 16, MediaQuery.of(context).viewInsets.bottom + 16),
+        16,
+        0,
+        16,
+        MediaQuery.of(context).viewInsets.bottom + 16,
+      ),
       child: SingleChildScrollView(
         child: Column(
           mainAxisSize: MainAxisSize.min,
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
-            Text(widget.conversation.title,
-                style: Theme.of(context).textTheme.titleMedium,
-                maxLines: 1,
-                overflow: TextOverflow.ellipsis),
+            Text(
+              widget.conversation.title,
+              style: Theme.of(context).textTheme.titleMedium,
+              maxLines: 1,
+              overflow: TextOverflow.ellipsis,
+            ),
             const SizedBox(height: 12),
             TextField(
               controller: _name,
@@ -477,14 +619,16 @@ class _OrganizeSheetState extends State<_OrganizeSheet> {
               spacing: 8,
               children: [
                 _colorDot(null),
-                for (final c in _palette) _colorDot(c),
+                for (final c in kColorPalette) _colorDot(c),
               ],
             ),
             const SizedBox(height: 16),
             Row(
               children: [
-                Text('Categories',
-                    style: Theme.of(context).textTheme.labelMedium),
+                Text(
+                  'Categories',
+                  style: Theme.of(context).textTheme.labelMedium,
+                ),
                 const Spacer(),
                 TextButton.icon(
                   onPressed: _addCategory,
@@ -497,8 +641,10 @@ class _OrganizeSheetState extends State<_OrganizeSheet> {
               CheckboxListTile(
                 dense: true,
                 contentPadding: EdgeInsets.zero,
-                secondary:
-                    CircleAvatar(radius: 8, backgroundColor: Color(c.color)),
+                secondary: CircleAvatar(
+                  radius: 8,
+                  backgroundColor: Color(c.color),
+                ),
                 title: Text(c.name),
                 value: _selected.contains(c.id),
                 onChanged: (v) => _toggleCategory(c, v == true),
@@ -506,10 +652,7 @@ class _OrganizeSheetState extends State<_OrganizeSheet> {
             const SizedBox(height: 8),
             SizedBox(
               width: double.infinity,
-              child: FilledButton(
-                onPressed: _save,
-                child: const Text('Save'),
-              ),
+              child: FilledButton(onPressed: _save, child: const Text('Save')),
             ),
           ],
         ),

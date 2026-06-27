@@ -27,12 +27,17 @@ class ContactsSnapshot {
   /// ghosts with no number), so the native handoff opens the right thread.
   final Map<String, String> _nameToPhone;
 
+  /// All contacts as pickable people (normalized phone + display name), for the
+  /// "new group" composer. Sorted by display name.
+  final List<({String phone, String display})> people;
+
   const ContactsSnapshot({
     required this.available,
     required Map<String, String> phoneToName,
     Map<String, Uint8List> phoneToPhoto = const {},
     Map<String, Uint8List> nameToPhoto = const {},
     Map<String, String> nameToPhone = const {},
+    this.people = const [],
   })  : _phoneToName = phoneToName,
         _phoneToPhoto = phoneToPhoto,
         _nameToPhoto = nameToPhoto,
@@ -149,12 +154,17 @@ class ContactsService {
       }
     }
 
+    final people = [
+      for (final e in phoneToName.entries) (phone: e.key, display: e.value),
+    ]..sort((a, b) => a.display.toLowerCase().compareTo(b.display.toLowerCase()));
+
     return ContactsSnapshot(
       available: true,
       phoneToName: phoneToName,
       phoneToPhoto: phoneToPhoto,
       nameToPhoto: nameToPhoto,
       nameToPhone: nameToPhone,
+      people: people,
     );
   }
 }
