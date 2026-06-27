@@ -5,6 +5,14 @@
 /// same shapes from manual imports. The UI only ever talks to these types.
 library;
 
+/// Digits-only, last 10 (tolerant of formatting and country-code prefixes).
+/// The canonical key for matching a phone number across SMS, groupings, and
+/// Contacts labels.
+String normalizePhone(String raw) {
+  final digits = raw.replaceAll(RegExp(r'\D'), '');
+  return digits.length > 10 ? digits.substring(digits.length - 10) : digits;
+}
+
 /// A single message inside a thread.
 class Message {
   final String body;

@@ -13,9 +13,6 @@ abstract class SmsSource {
 
   /// Load conversations, newest message first within each thread.
   Future<List<MessageThread>> loadThreads();
-
-  /// Send a text directly (Android: SmsManager). Throws if unsupported.
-  Future<void> sendSms({required String to, required String body});
 }
 
 /// Android data source backed by the SMS content provider.
@@ -89,11 +86,6 @@ class AndroidSmsSource implements SmsSource {
       return bd.compareTo(ad);
     });
     return threads;
-  }
-
-  @override
-  Future<void> sendSms({required String to, required String body}) async {
-    await _telephony.sendSms(to: to, message: body);
   }
 }
 

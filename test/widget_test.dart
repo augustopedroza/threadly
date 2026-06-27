@@ -1,6 +1,6 @@
 import 'package:flutter_test/flutter_test.dart';
 
-import 'package:group_chat/models/thread.dart';
+import 'package:chat_organizer/models/thread.dart';
 
 void main() {
   test('a thread with multiple participants is a group', () {

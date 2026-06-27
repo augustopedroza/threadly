@@ -1,9 +1,14 @@
 import 'package:flutter/material.dart';
 import 'package:permission_handler/permission_handler.dart';
-import 'package:url_launcher/url_launcher.dart';
 
+import 'data/contact_labels.dart';
+import 'data/organizer_store.dart';
 import 'data/sms_source.dart';
+import 'messaging.dart';
+import 'models/category.dart';
 import 'models/thread.dart';
+import 'ui/manage_categories_screen.dart';
+import 'ui/organize_sheet.dart';
 
 void main() => runApp(const GroupChatApp());
 
@@ -13,7 +18,7 @@ class GroupChatApp extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     return MaterialApp(
-      title: 'Group Chat',
+      title: 'ChatOrganizer',
       theme: ThemeData(
         colorScheme: ColorScheme.fromSeed(seedColor: Colors.indigo),
         useMaterial3: true,
@@ -23,7 +28,6 @@ class GroupChatApp extends StatelessWidget {
   }
 }
 
-/// Phase 0 home: request SMS permission, then show grouped threads.
 class ThreadListScreen extends StatefulWidget {
   const ThreadListScreen({super.key});
 
@@ -33,10 +37,18 @@ class ThreadListScreen extends StatefulWidget {
 
 class _ThreadListScreenState extends State<ThreadListScreen> {
   final SmsSource _source = AndroidSmsSource();
+  final OrganizerStore _store = OrganizerStore();
+  final ContactsLabelService _contactsService = ContactsLabelService();
+
   bool _loading = true;
   String? _error;
+
   List<MessageThread> _threads = const [];
-  bool _groupsOnly = false;
+  List<Category> _categories = const [];
+  Map<int, Set<String>> _memberships = const {};
+  Map<int, List<GroupChat>> _groupChatsByCategory = const {};
+  Map<String, ConversationAnnotation> _annotations = const {};
+  ContactsSnapshot _contacts = ContactsSnapshot.empty;
 
   @override
   void initState() {
@@ -59,8 +71,26 @@ class _ThreadListScreenState extends State<ThreadListScreen> {
         return;
       }
       final threads = await _source.loadThreads();
+      final categories = await _store.categories();
+      final memberships = await _store.allMemberships();
+      final groupChatsByCategory = <int, List<GroupChat>>{};
+      for (final c in categories) {
+        groupChatsByCategory[c.id] = await _store.groupChats(c.id);
+      }
+      final annotations = await _store.allAnnotations();
+      ContactsSnapshot contacts = ContactsSnapshot.empty;
+      try {
+        contacts = await _contactsService.load();
+      } catch (_) {
+        contacts = ContactsSnapshot.empty;
+      }
       setState(() {
         _threads = threads;
+        _categories = categories;
+        _memberships = memberships;
+        _groupChatsByCategory = groupChatsByCategory;
+        _annotations = annotations;
+        _contacts = contacts;
         _loading = false;
       });
     } catch (e) {
@@ -71,31 +101,83 @@ class _ThreadListScreenState extends State<ThreadListScreen> {
     }
   }
 
+  /// Category ids whose members include any participant of [t].
+  Set<int> _categoryIdsFor(MessageThread t) {
+    final phones = t.participants.map(normalizePhone).toSet();
+    return {
+      for (final c in _categories)
+        if ((_memberships[c.id] ?? const {}).any(phones.contains)) c.id,
+    };
+  }
+
+  List<MessageThread> _threadsForCategory(int categoryId) {
+    final members = _memberships[categoryId] ?? const {};
+    return _threads
+        .where((t) => t.participants.map(normalizePhone).any(members.contains))
+        .toList();
+  }
+
+  /// Distinct people (by normalized phone) seen across all threads.
+  List<Person> _people() {
+    final seen = <String>{};
+    final out = <Person>[];
+    for (final t in _threads) {
+      for (final raw in t.participants) {
+        final phone = normalizePhone(raw);
+        if (phone.isEmpty || !seen.add(phone)) continue;
+        out.add((phone: phone, display: raw));
+      }
+    }
+    out.sort((a, b) => a.display.compareTo(b.display));
+    return out;
+  }
+
+  Future<void> _openManageCategories() async {
+    final changed = await Navigator.of(context).push<bool>(
+      MaterialPageRoute(
+        builder: (_) =>
+            ManageCategoriesScreen(store: _store, people: _people()),
+      ),
+    );
+    if (changed == true) _load();
+  }
+
   @override
   Widget build(BuildContext context) {
-    final visible =
-        _groupsOnly ? _threads.where((t) => t.isGroup).toList() : _threads;
-    return Scaffold(
-      appBar: AppBar(
-        title: const Text('Group Chat'),
-        actions: [
-          IconButton(
-            tooltip: _groupsOnly ? 'Show all' : 'Groups only',
-            icon: Icon(_groupsOnly ? Icons.groups : Icons.groups_outlined),
-            onPressed: () => setState(() => _groupsOnly = !_groupsOnly),
-          ),
-          IconButton(
-            tooltip: 'Refresh',
-            icon: const Icon(Icons.refresh),
-            onPressed: _load,
-          ),
-        ],
+    // Tabs: "All" plus one per category. Keyed so the controller rebuilds when
+    // the category set changes.
+    final tabs = ['All', ..._categories.map((c) => c.name)];
+    return DefaultTabController(
+      key: ValueKey(_categories.map((c) => c.id).join(',')),
+      length: tabs.length,
+      child: Scaffold(
+        appBar: AppBar(
+          title: const Text('Chats'),
+          actions: [
+            IconButton(
+              tooltip: 'Manage categories',
+              icon: const Icon(Icons.folder_outlined),
+              onPressed: _openManageCategories,
+            ),
+            IconButton(
+              tooltip: 'Refresh',
+              icon: const Icon(Icons.refresh),
+              onPressed: _load,
+            ),
+          ],
+          bottom: _loading || _error != null
+              ? null
+              : TabBar(
+                  isScrollable: true,
+                  tabs: [for (final t in tabs) Tab(text: t)],
+                ),
+        ),
+        body: _buildBody(),
       ),
-      body: _buildBody(visible),
     );
   }
 
-  Widget _buildBody(List<MessageThread> visible) {
+  Widget _buildBody() {
     if (_loading) return const Center(child: CircularProgressIndicator());
     if (_error != null) {
       return Center(
@@ -114,69 +196,250 @@ class _ThreadListScreenState extends State<ThreadListScreen> {
         ),
       );
     }
+    return TabBarView(
+      children: [
+        _threadList(_threads),
+        for (final c in _categories) _categoryView(c),
+      ],
+    );
+  }
+
+  /// The "All" tab: just the conversations.
+  Widget _threadList(List<MessageThread> visible) {
     if (visible.isEmpty) {
-      return const Center(child: Text('No conversations found.'));
+      return const Center(child: Text('No conversations here.'));
     }
     return ListView.separated(
       itemCount: visible.length,
       separatorBuilder: (context, index) => const Divider(height: 1),
-      itemBuilder: (context, i) {
-        final t = visible[i];
-        final last = t.latest;
-        return ListTile(
-          leading: CircleAvatar(
-            child: Icon(t.isGroup ? Icons.groups : Icons.person),
+      itemBuilder: (context, i) => _threadTile(visible[i]),
+    );
+  }
+
+  /// A category tab: its saved group chats first, then its conversations.
+  Widget _categoryView(Category category) {
+    final chats = _groupChatsByCategory[category.id] ?? const [];
+    final threads = _threadsForCategory(category.id);
+    if (chats.isEmpty && threads.isEmpty) {
+      return const Center(child: Text('No conversations here.'));
+    }
+    return ListView(
+      children: [
+        if (chats.isNotEmpty) ...[
+          _subheader('Group chats'),
+          for (final gc in chats) _groupChatTile(gc, category),
+          if (threads.isNotEmpty) _subheader('Conversations'),
+        ],
+        for (final t in threads) _threadTile(t),
+      ],
+    );
+  }
+
+  Widget _subheader(String text) => Padding(
+        padding: const EdgeInsets.fromLTRB(16, 16, 16, 4),
+        child: Text(text, style: Theme.of(context).textTheme.labelMedium),
+      );
+
+  /// A saved group-chat roster row; tap (or the icon) starts a group text.
+  Widget _groupChatTile(GroupChat gc, Category category) {
+    return ListTile(
+      leading: CircleAvatar(
+        backgroundColor: Color(category.color),
+        child: const Icon(Icons.forum, color: Colors.white),
+      ),
+      title: Text(gc.name, maxLines: 1, overflow: TextOverflow.ellipsis),
+      subtitle: Text('${gc.members.length} people'),
+      trailing: IconButton(
+        icon: const Icon(Icons.open_in_new),
+        tooltip: 'Start group text',
+        onPressed:
+            gc.members.isEmpty ? null : () => launchGroupText(context, gc.members),
+      ),
+      onTap: gc.members.isEmpty ? null : () => launchGroupText(context, gc.members),
+    );
+  }
+
+  Widget _threadTile(MessageThread t) {
+    final ann = _annotations[t.participantKey];
+    final categoryChips = [
+      for (final c in _categories)
+        if (_categoryIdsFor(t).contains(c.id)) c,
+    ];
+    final labelNames = _contacts.labelsForThread(t);
+    final hasName = ann?.name?.isNotEmpty == true;
+    final subtitleLines = <Widget>[
+      if (hasName)
+        Text(
+          ann!.name!,
+          maxLines: 1,
+          overflow: TextOverflow.ellipsis,
+          style: const TextStyle(fontWeight: FontWeight.w600),
+        ),
+      Text(
+        ann?.note?.isNotEmpty == true ? ann!.note! : (t.latest?.body ?? ''),
+        maxLines: 1,
+        overflow: TextOverflow.ellipsis,
+        style: ann?.note?.isNotEmpty == true
+            ? const TextStyle(fontStyle: FontStyle.italic)
+            : null,
+      ),
+      if (categoryChips.isNotEmpty || labelNames.isNotEmpty)
+        Padding(
+          padding: const EdgeInsets.only(top: 4),
+          child: Wrap(
+            spacing: 4,
+            runSpacing: 4,
+            children: [
+              for (final c in categoryChips)
+                _MiniChip(label: c.name, color: Color(c.color)),
+              for (final l in labelNames) _MiniChip(label: l, outlined: true),
+            ],
           ),
-          title: Text(t.title, maxLines: 1, overflow: TextOverflow.ellipsis),
-          subtitle: Text(
-            last?.body ?? '',
-            maxLines: 1,
-            overflow: TextOverflow.ellipsis,
-          ),
-          trailing: t.isGroup
-              ? const Chip(
-                  label: Text('Group'),
-                  visualDensity: VisualDensity.compact,
-                )
-              : null,
-          onTap: () => Navigator.of(context).push(
-            MaterialPageRoute(
-              builder: (_) => ThreadScreen(thread: t, source: _source),
-            ),
-          ),
-        );
-      },
+        ),
+    ];
+    return ListTile(
+      isThreeLine:
+          hasName || categoryChips.isNotEmpty || labelNames.isNotEmpty,
+      leading: CircleAvatar(
+        backgroundColor: ann?.color != null ? Color(ann!.color!) : null,
+        child: Icon(
+          t.isGroup ? Icons.groups : Icons.person,
+          color: ann?.color != null ? Colors.white : null,
+        ),
+      ),
+      title: Text(t.title, maxLines: 1, overflow: TextOverflow.ellipsis),
+      subtitle: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: subtitleLines,
+      ),
+      onTap: () => _openThread(t),
+    );
+  }
+
+  Future<void> _openThread(MessageThread t) async {
+    await Navigator.of(context).push(
+      MaterialPageRoute(
+        builder: (_) => ThreadScreen(
+          thread: t,
+          store: _store,
+          contactsService: _contactsService,
+          categories: _categories,
+          threadCategoryIds: _categoryIdsFor(t),
+          annotation: _annotations[t.participantKey],
+          contacts: _contacts,
+          onChanged: _load,
+        ),
+      ),
     );
   }
 }
 
-/// A single conversation, with the two core actions:
-///  - Reply here  -> send via the data source (SmsManager on Android)
-///  - Open in Messages -> deep-link out to the native app (works everywhere)
+class _MiniChip extends StatelessWidget {
+  final String label;
+  final Color? color;
+  final bool outlined;
+  const _MiniChip({required this.label, this.color, this.outlined = false});
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 2),
+      decoration: BoxDecoration(
+        color: outlined ? null : (color ?? Colors.grey).withValues(alpha: 0.18),
+        border: outlined
+            ? Border.all(color: Theme.of(context).colorScheme.outline)
+            : null,
+        borderRadius: BorderRadius.circular(10),
+      ),
+      child: Row(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          if (!outlined && color != null)
+            Padding(
+              padding: const EdgeInsets.only(right: 4),
+              child: CircleAvatar(radius: 4, backgroundColor: color),
+            ),
+          Text(label, style: Theme.of(context).textTheme.labelSmall),
+        ],
+      ),
+    );
+  }
+}
+
+/// A single conversation: messages, the native-app handoff, and the Organize
+/// editor (color/note, categories, Contacts labels).
 class ThreadScreen extends StatelessWidget {
   final MessageThread thread;
-  final SmsSource source;
+  final OrganizerStore store;
+  final ContactsLabelService contactsService;
+  final List<Category> categories;
+  final Set<int> threadCategoryIds;
+  final ConversationAnnotation? annotation;
+  final ContactsSnapshot contacts;
+  final VoidCallback onChanged;
 
-  const ThreadScreen({super.key, required this.thread, required this.source});
+  const ThreadScreen({
+    super.key,
+    required this.thread,
+    required this.store,
+    required this.contactsService,
+    required this.categories,
+    required this.threadCategoryIds,
+    required this.annotation,
+    required this.contacts,
+    required this.onChanged,
+  });
 
-  Future<void> _openInMessages() async {
-    final to = thread.participants.join(',');
-    final uri = Uri.parse('sms:$to');
-    if (await canLaunchUrl(uri)) {
-      await launchUrl(uri, mode: LaunchMode.externalApplication);
-    }
+  Future<void> _organize(BuildContext context) async {
+    final changed = await showOrganizeSheet(
+      context,
+      thread: thread,
+      store: store,
+      contactsService: contactsService,
+      categories: categories,
+      threadCategoryIds: threadCategoryIds,
+      annotation: annotation,
+      contacts: contacts,
+    );
+    if (changed) onChanged();
   }
 
   @override
   Widget build(BuildContext context) {
+    final color =
+        annotation?.color != null ? Color(annotation!.color!) : null;
     return Scaffold(
       appBar: AppBar(
-        title: Text(thread.title, maxLines: 1, overflow: TextOverflow.ellipsis),
+        backgroundColor: color,
+        foregroundColor: color != null ? Colors.white : null,
+        title: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Text(thread.title, maxLines: 1, overflow: TextOverflow.ellipsis),
+            if (annotation?.name?.isNotEmpty == true)
+              Text(
+                annotation!.name!,
+                maxLines: 1,
+                overflow: TextOverflow.ellipsis,
+                style: Theme.of(context).textTheme.bodySmall?.copyWith(
+                      color: color != null
+                          ? Colors.white70
+                          : Theme.of(context).colorScheme.onSurfaceVariant,
+                    ),
+              ),
+          ],
+        ),
         actions: [
+          IconButton(
+            tooltip: 'Organize',
+            icon: const Icon(Icons.tune),
+            onPressed: () => _organize(context),
+          ),
           IconButton(
             tooltip: 'Open in Messages',
             icon: const Icon(Icons.open_in_new),
-            onPressed: _openInMessages,
+            onPressed: () => openSmsCompose(thread.participants),
           ),
         ],
       ),
@@ -215,83 +478,63 @@ class ThreadScreen extends StatelessWidget {
         },
       ),
       bottomNavigationBar: SafeArea(
-        child: Padding(
-          padding: const EdgeInsets.all(8),
-          child: Row(
-            children: [
-              Expanded(
-                child: OutlinedButton.icon(
-                  onPressed: _openInMessages,
-                  icon: const Icon(Icons.open_in_new),
-                  label: const Text('Open in Messages'),
-                ),
-              ),
-              const SizedBox(width: 8),
-              Expanded(
-                child: FilledButton.icon(
-                  onPressed: () => _showReplySheet(context),
-                  icon: const Icon(Icons.reply),
-                  label: const Text('Reply here'),
-                ),
-              ),
-            ],
-          ),
+        child: _MessagesComposeBar(
+          onSend: (text) => openSmsCompose(thread.participants, body: text),
         ),
       ),
     );
   }
+}
 
-  void _showReplySheet(BuildContext context) {
-    final controller = TextEditingController();
-    showModalBottomSheet(
-      context: context,
-      isScrollControlled: true,
-      builder: (sheetContext) {
-        return Padding(
-          padding: EdgeInsets.only(
-            bottom: MediaQuery.of(sheetContext).viewInsets.bottom,
-            left: 12,
-            right: 12,
-            top: 12,
-          ),
-          child: Row(
-            children: [
-              Expanded(
-                child: TextField(
-                  controller: controller,
-                  autofocus: true,
-                  decoration: const InputDecoration(hintText: 'Message'),
-                ),
+/// A compose row that drafts a message and hands it to the native Messages app
+/// (it does not send directly — see the README/CLAUDE notes on why replies must
+/// go through the default SMS app to appear in the user's real history).
+class _MessagesComposeBar extends StatefulWidget {
+  final ValueChanged<String> onSend;
+  const _MessagesComposeBar({required this.onSend});
+
+  @override
+  State<_MessagesComposeBar> createState() => _MessagesComposeBarState();
+}
+
+class _MessagesComposeBarState extends State<_MessagesComposeBar> {
+  final TextEditingController _controller = TextEditingController();
+
+  @override
+  void dispose() {
+    _controller.dispose();
+    super.dispose();
+  }
+
+  void _send() {
+    final text = _controller.text.trim();
+    widget.onSend(text);
+    _controller.clear();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Padding(
+      padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+      child: Row(
+        children: [
+          Expanded(
+            child: TextField(
+              controller: _controller,
+              decoration: const InputDecoration(
+                hintText: 'Message (opens in Messages to send)',
+                border: OutlineInputBorder(),
+                isDense: true,
               ),
-              IconButton(
-                icon: const Icon(Icons.send),
-                onPressed: () async {
-                  final text = controller.text.trim();
-                  if (text.isEmpty) return;
-                  final to = thread.participants.isNotEmpty
-                      ? thread.participants.first
-                      : '';
-                  Navigator.of(sheetContext).pop();
-                  try {
-                    await source.sendSms(to: to, body: text);
-                    if (context.mounted) {
-                      ScaffoldMessenger.of(context).showSnackBar(
-                        const SnackBar(content: Text('Sent')),
-                      );
-                    }
-                  } catch (e) {
-                    if (context.mounted) {
-                      ScaffoldMessenger.of(context).showSnackBar(
-                        SnackBar(content: Text('Send failed: $e')),
-                      );
-                    }
-                  }
-                },
-              ),
-            ],
+            ),
           ),
-        );
-      },
+          const SizedBox(width: 8),
+          FilledButton(
+            onPressed: _send,
+            child: const Icon(Icons.open_in_new),
+          ),
+        ],
+      ),
     );
   }
 }

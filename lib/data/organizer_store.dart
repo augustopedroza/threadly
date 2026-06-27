@@ -1,0 +1,266 @@
+import 'package:path/path.dart' as p;
+import 'package:sqflite/sqflite.dart';
+
+import '../models/category.dart';
+
+/// Local persistence for the app-managed organizing layer:
+///  - categories (buckets of people) + their members (phone numbers)
+///  - per-conversation annotations (color + note)
+///
+/// NOTE: the SQLite tables are still named `groupings` / `grouping_members`
+/// (and the `grouping_id` column) for backward compatibility with existing
+/// installs — the user-facing concept was renamed to "category", but renaming
+/// the tables would require a migration. These names are internal only.
+///
+/// Contacts labels are NOT stored here — those live in the Android Contacts
+/// provider (see ContactsLabels). This store is purely app-owned data.
+class OrganizerStore {
+  Database? _db;
+
+  Future<Database> get _database async => _db ??= await _open();
+
+  Future<Database> _open() async {
+    final dir = await getDatabasesPath();
+    return openDatabase(
+      p.join(dir, 'organizer.db'),
+      version: 3,
+      onCreate: (db, _) async {
+        await db.execute('''
+          CREATE TABLE groupings(
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            name TEXT NOT NULL,
+            color INTEGER NOT NULL
+          )''');
+        await db.execute('''
+          CREATE TABLE grouping_members(
+            grouping_id INTEGER NOT NULL,
+            phone TEXT NOT NULL,
+            PRIMARY KEY(grouping_id, phone),
+            FOREIGN KEY(grouping_id) REFERENCES groupings(id) ON DELETE CASCADE
+          )''');
+        await db.execute('''
+          CREATE TABLE conversation_annotations(
+            thread_key TEXT PRIMARY KEY,
+            name TEXT,
+            color INTEGER,
+            note TEXT
+          )''');
+        await _createGroupChatTables(db);
+      },
+      onUpgrade: (db, oldVersion, _) async {
+        if (oldVersion < 2) await _createGroupChatTables(db);
+        if (oldVersion < 3) {
+          await db.execute(
+              'ALTER TABLE conversation_annotations ADD COLUMN name TEXT');
+        }
+      },
+    );
+  }
+
+  /// Saved group-chat rosters under a category (added in schema v2).
+  Future<void> _createGroupChatTables(Database db) async {
+    await db.execute('''
+      CREATE TABLE group_chats(
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        category_id INTEGER NOT NULL,
+        name TEXT NOT NULL,
+        FOREIGN KEY(category_id) REFERENCES groupings(id) ON DELETE CASCADE
+      )''');
+    await db.execute('''
+      CREATE TABLE group_chat_members(
+        group_chat_id INTEGER NOT NULL,
+        phone TEXT NOT NULL,
+        PRIMARY KEY(group_chat_id, phone),
+        FOREIGN KEY(group_chat_id) REFERENCES group_chats(id) ON DELETE CASCADE
+      )''');
+  }
+
+  // --- Categories --------------------------------------------------------
+
+  Future<List<Category>> categories() async {
+    final db = await _database;
+    final rows = await db.query('groupings', orderBy: 'name COLLATE NOCASE');
+    return [
+      for (final r in rows)
+        Category(
+          id: r['id'] as int,
+          name: r['name'] as String,
+          color: r['color'] as int,
+        ),
+    ];
+  }
+
+  /// Create a category, or return the existing one with the same name
+  /// (case-insensitive). Idempotent so "adding" never spawns a duplicate.
+  Future<Category> createCategory(String name, int color) async {
+    final db = await _database;
+    final trimmed = name.trim();
+    final existing = await db.query(
+      'groupings',
+      where: 'name = ? COLLATE NOCASE',
+      whereArgs: [trimmed],
+      limit: 1,
+    );
+    if (existing.isNotEmpty) {
+      final r = existing.first;
+      return Category(
+        id: r['id'] as int,
+        name: r['name'] as String,
+        color: r['color'] as int,
+      );
+    }
+    final id = await db.insert('groupings', {'name': trimmed, 'color': color});
+    return Category(id: id, name: trimmed, color: color);
+  }
+
+  Future<void> updateCategory(int id, String name, int color) async {
+    final db = await _database;
+    await db.update(
+      'groupings',
+      {'name': name, 'color': color},
+      where: 'id = ?',
+      whereArgs: [id],
+    );
+  }
+
+  Future<void> deleteCategory(int id) async {
+    final db = await _database;
+    await db
+        .delete('grouping_members', where: 'grouping_id = ?', whereArgs: [id]);
+    // Remove the category's group-chat rosters and their members too.
+    final chats =
+        await db.query('group_chats', columns: ['id'], where: 'category_id = ?', whereArgs: [id]);
+    for (final r in chats) {
+      await db.delete('group_chat_members',
+          where: 'group_chat_id = ?', whereArgs: [r['id']]);
+    }
+    await db.delete('group_chats', where: 'category_id = ?', whereArgs: [id]);
+    await db.delete('groupings', where: 'id = ?', whereArgs: [id]);
+  }
+
+  /// category id -> set of member phone numbers (normalized).
+  Future<Map<int, Set<String>>> allMemberships() async {
+    final db = await _database;
+    final rows = await db.query('grouping_members');
+    final out = <int, Set<String>>{};
+    for (final r in rows) {
+      (out[r['grouping_id'] as int] ??= <String>{}).add(r['phone'] as String);
+    }
+    return out;
+  }
+
+  Future<void> setMembership(int categoryId, String phone, bool member) async {
+    final db = await _database;
+    if (member) {
+      await db.insert(
+        'grouping_members',
+        {'grouping_id': categoryId, 'phone': phone},
+        conflictAlgorithm: ConflictAlgorithm.ignore,
+      );
+    } else {
+      await db.delete(
+        'grouping_members',
+        where: 'grouping_id = ? AND phone = ?',
+        whereArgs: [categoryId, phone],
+      );
+    }
+  }
+
+  // --- Group chats (saved rosters) --------------------------------------
+
+  Future<List<GroupChat>> groupChats(int categoryId) async {
+    final db = await _database;
+    final rows = await db.query('group_chats',
+        where: 'category_id = ?',
+        whereArgs: [categoryId],
+        orderBy: 'name COLLATE NOCASE');
+    final out = <GroupChat>[];
+    for (final r in rows) {
+      final id = r['id'] as int;
+      final memberRows = await db.query('group_chat_members',
+          columns: ['phone'], where: 'group_chat_id = ?', whereArgs: [id]);
+      out.add(GroupChat(
+        id: id,
+        categoryId: categoryId,
+        name: r['name'] as String,
+        members: [for (final m in memberRows) m['phone'] as String],
+      ));
+    }
+    return out;
+  }
+
+  Future<int> createGroupChat(
+      int categoryId, String name, List<String> phones) async {
+    final db = await _database;
+    final id = await db
+        .insert('group_chats', {'category_id': categoryId, 'name': name.trim()});
+    await _setGroupChatMembers(db, id, phones);
+    return id;
+  }
+
+  Future<void> updateGroupChat(int id, String name, List<String> phones) async {
+    final db = await _database;
+    await db.update('group_chats', {'name': name.trim()},
+        where: 'id = ?', whereArgs: [id]);
+    await db
+        .delete('group_chat_members', where: 'group_chat_id = ?', whereArgs: [id]);
+    await _setGroupChatMembers(db, id, phones);
+  }
+
+  Future<void> deleteGroupChat(int id) async {
+    final db = await _database;
+    await db
+        .delete('group_chat_members', where: 'group_chat_id = ?', whereArgs: [id]);
+    await db.delete('group_chats', where: 'id = ?', whereArgs: [id]);
+  }
+
+  Future<void> _setGroupChatMembers(
+      Database db, int chatId, List<String> phones) async {
+    for (final p in phones) {
+      await db.insert(
+        'group_chat_members',
+        {'group_chat_id': chatId, 'phone': p},
+        conflictAlgorithm: ConflictAlgorithm.ignore,
+      );
+    }
+  }
+
+  // --- Conversation annotations -----------------------------------------
+
+  /// thread key -> annotation.
+  Future<Map<String, ConversationAnnotation>> allAnnotations() async {
+    final db = await _database;
+    final rows = await db.query('conversation_annotations');
+    return {
+      for (final r in rows)
+        r['thread_key'] as String: ConversationAnnotation(
+          threadKey: r['thread_key'] as String,
+          name: r['name'] as String?,
+          color: r['color'] as int?,
+          note: r['note'] as String?,
+        ),
+    };
+  }
+
+  Future<void> setAnnotation(String threadKey,
+      {String? name, int? color, String? note}) async {
+    final db = await _database;
+    final cleanNote = (note != null && note.trim().isEmpty) ? null : note?.trim();
+    final cleanName = (name != null && name.trim().isEmpty) ? null : name?.trim();
+    if (color == null && cleanNote == null && cleanName == null) {
+      await db.delete('conversation_annotations',
+          where: 'thread_key = ?', whereArgs: [threadKey]);
+      return;
+    }
+    await db.insert(
+      'conversation_annotations',
+      {
+        'thread_key': threadKey,
+        'name': cleanName,
+        'color': color,
+        'note': cleanNote,
+      },
+      conflictAlgorithm: ConflictAlgorithm.replace,
+    );
+  }
+}
