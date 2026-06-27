@@ -23,26 +23,12 @@ class Conversation {
 
   final bool isGroup;
 
-  /// Member phone numbers harvested from the notification, when available (used
-  /// to reopen a group thread via the sms: deep link). May be empty.
-  final List<String> members;
-
-  /// Distinct sender display names seen in the notification — resolved to
-  /// numbers via contacts when [members] is empty.
-  final List<String> senders;
-
-  /// Diagnostic string of the raw group signals the notification carried.
-  final String dbg;
-
   const Conversation({
     required this.id,
     required this.title,
     required this.lastActivity,
     required this.unread,
     required this.isGroup,
-    this.members = const [],
-    this.senders = const [],
-    this.dbg = '',
   });
 }
 
@@ -79,15 +65,6 @@ class NotificationConversationsService {
               (m['ts'] as num?)?.toInt() ?? 0),
           unread: (m['unread'] as bool?) ?? false,
           isGroup: (m['group'] as bool?) ?? false,
-          members: ((m['members'] as String?) ?? '')
-              .split(',')
-              .where((s) => s.isNotEmpty)
-              .toList(),
-          senders: ((m['senders'] as String?) ?? '')
-              .split('\u0001')
-              .where((s) => s.isNotEmpty)
-              .toList(),
-          dbg: (m['dbg'] as String?) ?? '',
         ),
     ];
   }

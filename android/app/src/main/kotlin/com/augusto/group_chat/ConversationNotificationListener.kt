@@ -3,7 +3,6 @@ package com.augusto.group_chat
 import android.app.Notification
 import android.app.PendingIntent
 import android.content.Context
-import android.os.Build
 import android.os.Bundle
 import android.service.notification.NotificationListenerService
 import android.service.notification.StatusBarNotification
@@ -22,7 +21,7 @@ import org.json.JSONObject
  * last-activity timestamp + group flag) so the list survives dismissals and
  * restarts, and tracks which conversations currently have an active (= unread)
  * notification. It also holds each active notification's contentIntent so the UI
- * can reopen that exact thread in Google Messages — no phone numbers required.
+ * can reopen that exact thread in Google Messages while it's still showing.
  */
 class ConversationNotificationListener : NotificationListenerService() {
 
@@ -49,7 +48,6 @@ class ConversationNotificationListener : NotificationListenerService() {
         val id = conversationId(sbn) ?: return
         // Removal in Google Messages means the user has seen it: now read.
         activeIntents.remove(id)
-        markRead(this, id)
         persistActive(this)
     }
 
@@ -69,96 +67,21 @@ class ConversationNotificationListener : NotificationListenerService() {
 
         val store = prefs(this)
         val convos = JSONObject(store.getString(KEY_CONVOS, "{}") ?: "{}")
-        // Accumulate member numbers across notifications (a single notification
-        // may only name the latest sender), so the conversation keeps the full
-        // roster we've ever seen.
-        val members = LinkedHashSet<String>()
-        convos.optJSONObject(id)?.optString("members", "")
-            ?.split(",")?.forEach { if (it.isNotEmpty()) members.add(it) }
-        members.addAll(extractNumbers(extras))
-        // Accumulate distinct sender names too (separated by \u0001 since names
-        // can contain commas); the app resolves them to numbers via contacts
-        // when the notification didn't carry tel: numbers directly.
-        val senders = LinkedHashSet<String>()
-        convos.optJSONObject(id)?.optString("senders", "")
-            ?.split("\u0001")?.forEach { if (it.isNotEmpty()) senders.add(it) }
-        senders.addAll(extractSenders(extras))
-        // Diagnostic: raw group signals this notification carried.
-        val dbgFlag =
-            if (extras.getBoolean("android.isGroupConversation", false)) 1 else 0
-        val dbgTitle = if (!extras.getCharSequence("android.conversationTitle")
-                .isNullOrBlank()) 1 else 0
-        val dbg = "flag=$dbgFlag convTitle=$dbgTitle " +
-            "people=${countPeople(extras)} msgSenders=${extractSenders(extras).size}"
         val entry = JSONObject()
             .put("title", title)
             .put("ts", sbn.postTime)
             .put("group", isGroup)
-            .put("members", members.joinToString(","))
-            .put("dbg", dbg)
-            .put("senders", senders.joinToString("\u0001"))
         convos.put(id, entry)
         store.edit().putString(KEY_CONVOS, convos.toString()).apply()
-    }
-
-    /** Distinct sender display names from the bundled MessagingStyle messages. */
-    @Suppress("DEPRECATION")
-    private fun extractSenders(extras: Bundle): List<String> {
-        val out = LinkedHashSet<String>()
-        extras.getParcelableArray("android.messages")?.forEach { m ->
-            val b = m as? Bundle ?: return@forEach
-            b.getCharSequence("sender")?.toString()?.trim()
-                ?.let { if (it.isNotEmpty()) out.add(it) }
-        }
-        return out.toList()
-    }
-
-    /**
-     * Member phone numbers carried by the notification — from the legacy
-     * EXTRA_PEOPLE uri array, the EXTRA_PEOPLE_LIST [android.app.Person]s, and
-     * each message's sender Person. Only `tel:` uris yield a number (a contact
-     * `content://` uri can't be turned into a number here).
-     */
-    private fun countPeople(extras: Bundle): Int {
-        var n = extras.getStringArray("android.people")?.size ?: 0
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
-            @Suppress("DEPRECATION")
-            n += extras.getParcelableArrayList<android.app.Person>(
-                "android.people.list"
-            )?.size ?: 0
-        }
-        return n
-    }
-
-    @Suppress("DEPRECATION")
-    private fun extractNumbers(extras: Bundle): List<String> {
-        val uris = mutableListOf<String>()
-        extras.getStringArray("android.people")?.forEach { if (it != null) uris.add(it) }
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
-            extras.getParcelableArrayList<android.app.Person>("android.people.list")
-                ?.forEach { p -> p.uri?.let { uris.add(it) } }
-            extras.getParcelableArray("android.messages")?.forEach { m ->
-                val b = m as? Bundle ?: return@forEach
-                (b.getParcelable("sender_person") as? android.app.Person)
-                    ?.uri?.let { uris.add(it) }
-            }
-        }
-        val numbers = LinkedHashSet<String>()
-        for (u in uris) {
-            if (!u.startsWith("tel:")) continue
-            val cleaned = u.removePrefix("tel:").filter { it.isDigit() || it == '+' }
-            if (cleaned.count { it.isDigit() } >= 7) numbers.add(cleaned)
-        }
-        return numbers.toList()
     }
 
     /**
      * Decide whether a notification is a group chat and pick the best title.
      *
      * Google Messages sets EXTRA_TITLE to the latest *sender* even for groups,
-     * so a group can masquerade as a 1:1. We instead consult the MessagingStyle:
-     * its group flag, distinct senders, and conversation title (the group's
-     * name / participant list), which is also the better label to show.
+     * so a group can masquerade as a 1:1. We instead consult the group flag, the
+     * conversation title (the group's name, also the better label), and whether
+     * the bundled message history names more than one sender.
      */
     @Suppress("DEPRECATION")
     private fun parseGroupAndTitle(extras: Bundle): Pair<Boolean, String> {
@@ -167,21 +90,16 @@ class ConversationNotificationListener : NotificationListenerService() {
         // EXTRA_CONVERSATION_TITLE = "android.conversationTitle" (API 24+).
         val convTitle = extras.getCharSequence("android.conversationTitle")
             ?.toString()?.trim()
-
         // EXTRA_IS_GROUP_CONVERSATION = "android.isGroupConversation".
         var isGroup = extras.getBoolean("android.isGroupConversation", false)
 
-        // Distinct senders from the bundled MessagingStyle history
-        // (EXTRA_MESSAGES = "android.messages"): each entry is a Bundle whose
-        // "sender" is the message author. More than one means a group.
+        // Distinct senders in the bundled MessagingStyle history: more than one
+        // means a group.
         val senders = HashSet<String>()
-        val messages = extras.getParcelableArray("android.messages")
-        if (messages != null) {
-            for (p in messages) {
-                val b = p as? Bundle ?: continue
-                val sender = b.getCharSequence("sender")?.toString()?.trim()
-                if (!sender.isNullOrEmpty()) senders.add(sender)
-            }
+        extras.getParcelableArray("android.messages")?.forEach { m ->
+            val b = m as? Bundle ?: return@forEach
+            b.getCharSequence("sender")?.toString()?.trim()
+                ?.let { if (it.isNotEmpty()) senders.add(it) }
         }
         if (senders.size > 1) isGroup = true
         // Google Messages doesn't set a conversation title for 1:1 chats.
@@ -213,11 +131,6 @@ class ConversationNotificationListener : NotificationListenerService() {
                 .apply()
         }
 
-        private fun markRead(ctx: Context, id: String) {
-            // Active set is rewritten from activeIntents on every change; nothing
-            // else to do here beyond dropping the intent (done by caller).
-        }
-
         /**
          * The conversation list for Flutter: a JSON array of
          * {id, title, ts, group, unread}, newest activity first.
@@ -236,9 +149,6 @@ class ConversationNotificationListener : NotificationListenerService() {
                         .put("ts", e.optLong("ts"))
                         .put("group", e.optBoolean("group", false))
                         .put("unread", active.contains(id))
-                        .put("members", e.optString("members", ""))
-                        .put("senders", e.optString("senders", ""))
-                        .put("dbg", e.optString("dbg", ""))
                 )
             }
             out.sortByDescending { it.optLong("ts") }
@@ -249,10 +159,9 @@ class ConversationNotificationListener : NotificationListenerService() {
 
         /**
          * Open the *exact* conversation thread via the live notification's
-         * contentIntent. Returns true only if that intent was sent — this is the
-         * one route that's unambiguous even for two groups with identical
-         * members. If there's no active notification, returns false so the caller
-         * can fall back (sms: deep link, then [openMessagesApp]).
+         * contentIntent. Returns true only if that intent was sent. If there's no
+         * active notification, returns false so the caller can fall back (sms:
+         * deep link, then [openMessagesApp]).
          */
         fun launch(ctx: Context, id: String): Boolean {
             val pi = activeIntents[id] ?: return false
