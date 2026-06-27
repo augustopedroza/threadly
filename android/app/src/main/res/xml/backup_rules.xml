@@ -1,0 +1,7 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Auto Backup rules for Android 11 and below (fullBackupContent).
+     Backs up the app's organizing data (categories, group chats, nicknames)
+     so it survives reinstall on the same Google account. -->
+<full-backup-content>
+    <include domain="database" path="organizer.db"/>
+</full-backup-content>

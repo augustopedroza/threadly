@@ -10,15 +10,15 @@ import 'models/thread.dart';
 import 'ui/manage_categories_screen.dart';
 import 'ui/organize_sheet.dart';
 
-void main() => runApp(const GroupChatApp());
+void main() => runApp(const ThreadlyApp());
 
-class GroupChatApp extends StatelessWidget {
-  const GroupChatApp({super.key});
+class ThreadlyApp extends StatelessWidget {
+  const ThreadlyApp({super.key});
 
   @override
   Widget build(BuildContext context) {
     return MaterialApp(
-      title: 'ChatOrganizer',
+      title: 'Threadly',
       theme: ThemeData(
         colorScheme: ColorScheme.fromSeed(seedColor: Colors.indigo),
         useMaterial3: true,
