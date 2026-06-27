@@ -4,6 +4,7 @@ import '../data/contacts.dart';
 import '../data/notifications.dart';
 import '../data/organizer_store.dart';
 import '../format.dart';
+import '../messaging.dart';
 import '../models/category.dart';
 
 /// Bridge-free home: a pure organizer + launcher over Google Messages.
@@ -274,9 +275,34 @@ class _ConversationsScreenState extends State<ConversationsScreen>
               ),
             )
           : null,
-      onTap: () => _notifs.launch(c.id),
+      onTap: () => _open(c),
       onLongPress: () => _organize(c),
     );
+  }
+
+  /// Open the conversation in Google Messages. For a 1:1 with a resolvable
+  /// number, the sms: deep link reliably lands on that exact thread (and doesn't
+  /// depend on a live notification). Otherwise fall back to the notification's
+  /// contentIntent / launching Messages. Warns if nothing could be opened.
+  Future<void> _open(Conversation c) async {
+    if (!c.isGroup) {
+      final number = _contacts.phoneForName(c.title) ?? _numberFromTitle(c.title);
+      if (number != null && await openSmsCompose([number])) return;
+    }
+    if (await _notifs.launch(c.id)) return;
+    if (mounted) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+            content: Text("Couldn't open this conversation in Messages.")),
+      );
+    }
+  }
+
+  /// If a conversation title is itself a phone number (unsaved contact), return
+  /// it for the sms: handoff; otherwise null.
+  String? _numberFromTitle(String title) {
+    final digits = title.replaceAll(RegExp(r'\D'), '');
+    return digits.length >= 7 ? title : null;
   }
 
   Future<void> _organize(Conversation c) async {
