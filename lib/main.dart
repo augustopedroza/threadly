@@ -27,6 +27,14 @@ class ThreadlyApp extends StatelessWidget {
         colorScheme: ColorScheme.fromSeed(seedColor: Colors.indigo),
         useMaterial3: true,
       ),
+      darkTheme: ThemeData(
+        colorScheme: ColorScheme.fromSeed(
+          seedColor: Colors.indigo,
+          brightness: Brightness.dark,
+        ),
+        useMaterial3: true,
+      ),
+      themeMode: ThemeMode.system,
       home: const ThreadListScreen(),
     );
   }
@@ -58,6 +66,7 @@ class _ThreadListScreenState extends State<ThreadListScreen> {
   Map<int, Set<String>> _memberships = const {};
   Map<int, List<GroupChat>> _groupChatsByCategory = const {};
   Map<String, ConversationAnnotation> _annotations = const {};
+  Map<String, int> _reads = const {};
   ContactsSnapshot _contacts = ContactsSnapshot.empty;
 
   bool _searching = false;
@@ -108,6 +117,7 @@ class _ThreadListScreenState extends State<ThreadListScreen> {
         groupChatsByCategory[c.id] = await _store.groupChats(c.id);
       }
       final annotations = await _store.allAnnotations();
+      final reads = await _store.allReads();
       ContactsSnapshot contacts = ContactsSnapshot.empty;
       try {
         contacts = await _contactsService.load();
@@ -120,6 +130,7 @@ class _ThreadListScreenState extends State<ThreadListScreen> {
         _memberships = memberships;
         _groupChatsByCategory = groupChatsByCategory;
         _annotations = annotations;
+        _reads = reads;
         _contacts = contacts;
         _loading = false;
       });
@@ -138,6 +149,29 @@ class _ThreadListScreenState extends State<ThreadListScreen> {
       for (final c in _categories)
         if ((_memberships[c.id] ?? const {}).any(phones.contains)) c.id,
     };
+  }
+
+  /// A conversation is unread when its newest message is *incoming* and arrived
+  /// after the user last opened the thread (see [_markThreadRead]). Outgoing
+  /// last messages are never unread — the user is the one who sent them.
+  bool _isUnread(MessageThread t) {
+    final latest = t.latest;
+    if (latest == null || !latest.isIncoming) return false;
+    final lastRead = _reads[t.participantKey];
+    return lastRead == null ||
+        latest.date.millisecondsSinceEpoch > lastRead;
+  }
+
+  /// Record that the user has seen [t] up to its newest message, so it stops
+  /// showing as unread. No-op if already marked at or past that point.
+  Future<void> _markThreadRead(MessageThread t) async {
+    final latest = t.latest;
+    if (latest == null) return;
+    final ms = latest.date.millisecondsSinceEpoch;
+    final prev = _reads[t.participantKey];
+    if (prev != null && prev >= ms) return;
+    await _store.markRead(t.participantKey, ms);
+    if (mounted) setState(() => _reads = {..._reads, t.participantKey: ms});
   }
 
   List<MessageThread> _threadsForCategory(int categoryId) {
@@ -507,6 +541,12 @@ class _ThreadListScreenState extends State<ThreadListScreen> {
         if (_categoryIdsFor(t).contains(c.id)) c,
     ];
     final hasName = ann?.name?.isNotEmpty == true;
+    final hasNote = ann?.note?.isNotEmpty == true;
+    final unread = _isUnread(t);
+    // The snippet shows the note if set, else the latest message body. Skip the
+    // line entirely when there's nothing to show (e.g. a media-only message with
+    // no text) so the category chips sit directly under the contact name.
+    final snippet = hasNote ? ann!.note! : (t.latest?.body ?? '');
     final subtitleLines = <Widget>[
       if (hasName)
         Text(
@@ -515,14 +555,17 @@ class _ThreadListScreenState extends State<ThreadListScreen> {
           overflow: TextOverflow.ellipsis,
           style: const TextStyle(fontWeight: FontWeight.w600),
         ),
-      Text(
-        ann?.note?.isNotEmpty == true ? ann!.note! : (t.latest?.body ?? ''),
-        maxLines: 1,
-        overflow: TextOverflow.ellipsis,
-        style: ann?.note?.isNotEmpty == true
-            ? const TextStyle(fontStyle: FontStyle.italic)
-            : null,
-      ),
+      if (snippet.isNotEmpty)
+        Text(
+          snippet,
+          maxLines: 1,
+          overflow: TextOverflow.ellipsis,
+          style: TextStyle(
+            fontStyle: hasNote ? FontStyle.italic : null,
+            fontWeight: unread ? FontWeight.bold : null,
+            color: unread ? Theme.of(context).colorScheme.onSurface : null,
+          ),
+        ),
       if (categoryChips.isNotEmpty)
         Padding(
           padding: const EdgeInsets.only(top: 4),
@@ -537,29 +580,42 @@ class _ThreadListScreenState extends State<ThreadListScreen> {
         ),
     ];
     final latest = t.latest;
+    final photo = _contacts.photoForThread(t);
     return ListTile(
       isThreeLine: hasName || categoryChips.isNotEmpty,
       leading: CircleAvatar(
         backgroundColor: ann?.color != null ? Color(ann!.color!) : null,
-        child: Icon(
-          t.isGroup ? Icons.groups : Icons.person,
-          color: ann?.color != null ? Colors.white : null,
-        ),
+        backgroundImage: photo != null ? MemoryImage(photo) : null,
+        child: photo != null
+            ? null
+            : Icon(
+                t.isGroup ? Icons.groups : Icons.person,
+                color: ann?.color != null ? Colors.white : null,
+              ),
       ),
       title: Row(
         crossAxisAlignment: CrossAxisAlignment.baseline,
         textBaseline: TextBaseline.alphabetic,
         children: [
           Expanded(
-            child: Text(_contacts.titleFor(t),
-                maxLines: 1, overflow: TextOverflow.ellipsis),
+            child: Text(
+              _contacts.titleFor(t),
+              maxLines: 1,
+              overflow: TextOverflow.ellipsis,
+              style: unread
+                  ? const TextStyle(fontWeight: FontWeight.bold)
+                  : null,
+            ),
           ),
           if (latest != null) ...[
             const SizedBox(width: 8),
             Text(
               formatListTime(latest.date),
               style: Theme.of(context).textTheme.labelSmall?.copyWith(
-                    color: Theme.of(context).colorScheme.onSurfaceVariant,
+                    color: unread
+                        ? Theme.of(context).colorScheme.primary
+                        : Theme.of(context).colorScheme.onSurfaceVariant,
+                    fontWeight: unread ? FontWeight.bold : null,
                   ),
             ),
           ],
@@ -569,6 +625,16 @@ class _ThreadListScreenState extends State<ThreadListScreen> {
         crossAxisAlignment: CrossAxisAlignment.start,
         children: subtitleLines,
       ),
+      trailing: unread
+          ? Container(
+              width: 10,
+              height: 10,
+              decoration: BoxDecoration(
+                color: Theme.of(context).colorScheme.primary,
+                shape: BoxShape.circle,
+              ),
+            )
+          : null,
       onTap: () => _openThread(t),
       onLongPress: () => _quickCategorize(t),
     );
@@ -661,6 +727,8 @@ class _ThreadListScreenState extends State<ThreadListScreen> {
   }
 
   Future<void> _openThread(MessageThread t) async {
+    await _markThreadRead(t);
+    if (!mounted) return;
     await Navigator.of(context).push(
       MaterialPageRoute(
         builder: (_) => ThreadScreen(
@@ -740,31 +808,70 @@ class ThreadScreen extends StatelessWidget {
     if (changed) onChanged();
   }
 
+  /// Hand off to the native Messages app. Resolves bridge `gm:` ghosts back to
+  /// real phone numbers first; if it can't, it warns instead of opening Messages
+  /// on a bogus thread.
+  void _handoff(BuildContext context, {String? body}) {
+    final recipients = contacts.sendRecipients(thread);
+    if (recipients == null) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text(
+              "Couldn't find a phone number for this conversation. Save the "
+              'contact in your phone, then refresh and try again.'),
+        ),
+      );
+      return;
+    }
+    openSmsCompose(recipients, body: body);
+  }
+
   @override
   Widget build(BuildContext context) {
     final color =
         annotation?.color != null ? Color(annotation!.color!) : null;
+    final photo = contacts.photoForThread(thread);
     return Scaffold(
       appBar: AppBar(
         backgroundColor: color,
         foregroundColor: color != null ? Colors.white : null,
-        title: Column(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          mainAxisSize: MainAxisSize.min,
+        title: Row(
           children: [
-            Text(contacts.titleFor(thread),
-                maxLines: 1, overflow: TextOverflow.ellipsis),
-            if (annotation?.name?.isNotEmpty == true)
-              Text(
-                annotation!.name!,
-                maxLines: 1,
-                overflow: TextOverflow.ellipsis,
-                style: Theme.of(context).textTheme.bodySmall?.copyWith(
-                      color: color != null
-                          ? Colors.white70
-                          : Theme.of(context).colorScheme.onSurfaceVariant,
+            CircleAvatar(
+              radius: 18,
+              backgroundColor: color != null ? Colors.white24 : null,
+              backgroundImage: photo != null ? MemoryImage(photo) : null,
+              child: photo != null
+                  ? null
+                  : Icon(
+                      thread.isGroup ? Icons.groups : Icons.person,
+                      color: color != null ? Colors.white : null,
                     ),
+            ),
+            const SizedBox(width: 12),
+            Expanded(
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  Text(contacts.titleFor(thread),
+                      maxLines: 1, overflow: TextOverflow.ellipsis),
+                  if (annotation?.name?.isNotEmpty == true)
+                    Text(
+                      annotation!.name!,
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                      style: Theme.of(context).textTheme.bodySmall?.copyWith(
+                            color: color != null
+                                ? Colors.white70
+                                : Theme.of(context)
+                                    .colorScheme
+                                    .onSurfaceVariant,
+                          ),
+                    ),
+                ],
               ),
+            ),
           ],
         ),
         actions: [
@@ -776,7 +883,7 @@ class ThreadScreen extends StatelessWidget {
           IconButton(
             tooltip: 'Open in Messages',
             icon: const Icon(Icons.open_in_new),
-            onPressed: () => openSmsCompose(thread.participants),
+            onPressed: () => _handoff(context),
           ),
         ],
       ),
@@ -824,8 +931,10 @@ class ThreadScreen extends StatelessWidget {
         },
       ),
       bottomNavigationBar: SafeArea(
-        child: _MessagesComposeBar(
-          onSend: (text) => openSmsCompose(thread.participants, body: text),
+        child: Builder(
+          builder: (context) => _MessagesComposeBar(
+            onSend: (text) => _handoff(context, body: text),
+          ),
         ),
       ),
     );

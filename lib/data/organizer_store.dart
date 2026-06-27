@@ -23,7 +23,7 @@ class OrganizerStore {
     final dir = await getDatabasesPath();
     return openDatabase(
       p.join(dir, 'organizer.db'),
-      version: 3,
+      version: 4,
       onCreate: (db, _) async {
         await db.execute('''
           CREATE TABLE groupings(
@@ -46,6 +46,7 @@ class OrganizerStore {
             note TEXT
           )''');
         await _createGroupChatTables(db);
+        await _createReadsTable(db);
       },
       onUpgrade: (db, oldVersion, _) async {
         if (oldVersion < 2) await _createGroupChatTables(db);
@@ -53,6 +54,7 @@ class OrganizerStore {
           await db.execute(
               'ALTER TABLE conversation_annotations ADD COLUMN name TEXT');
         }
+        if (oldVersion < 4) await _createReadsTable(db);
       },
     );
   }
@@ -72,6 +74,17 @@ class OrganizerStore {
         phone TEXT NOT NULL,
         PRIMARY KEY(group_chat_id, phone),
         FOREIGN KEY(group_chat_id) REFERENCES group_chats(id) ON DELETE CASCADE
+      )''');
+  }
+
+  /// Per-conversation read marker (added in schema v4): the timestamp of the
+  /// newest message the user had seen when they last opened the thread. A
+  /// conversation is "unread" when a newer incoming message arrives after this.
+  Future<void> _createReadsTable(Database db) async {
+    await db.execute('''
+      CREATE TABLE conversation_reads(
+        thread_key TEXT PRIMARY KEY,
+        last_read_ms INTEGER NOT NULL
       )''');
   }
 
@@ -260,6 +273,28 @@ class OrganizerStore {
         'color': color,
         'note': cleanNote,
       },
+      conflictAlgorithm: ConflictAlgorithm.replace,
+    );
+  }
+
+  // --- Read markers ------------------------------------------------------
+
+  /// thread key -> epoch-ms of the newest message seen when last opened.
+  Future<Map<String, int>> allReads() async {
+    final db = await _database;
+    final rows = await db.query('conversation_reads');
+    return {
+      for (final r in rows)
+        r['thread_key'] as String: r['last_read_ms'] as int,
+    };
+  }
+
+  /// Mark a conversation read up to [whenMs] (the newest message's timestamp).
+  Future<void> markRead(String threadKey, int whenMs) async {
+    final db = await _database;
+    await db.insert(
+      'conversation_reads',
+      {'thread_key': threadKey, 'last_read_ms': whenMs},
       conflictAlgorithm: ConflictAlgorithm.replace,
     );
   }

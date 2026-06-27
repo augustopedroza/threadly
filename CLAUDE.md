@@ -84,11 +84,12 @@ interfaces so iOS can be slotted in without touching the UI.
   category & label toggles), `manage_categories_screen.dart`, `edit_category_screen.dart` (also
   hosts a category's group chats), `group_chat_editor_screen.dart`.
 
-### SQLite schema (organizer.db, version 3)
+### SQLite schema (organizer.db, version 4)
 
 `onCreate` builds everything; `onUpgrade` migrates: `<2` adds the group-chat tables, `<3` adds the
-`name` column to `conversation_annotations`. **Bump `version` and add an `onUpgrade` branch for any
-schema change** — existing installs carry real user data.
+`name` column to `conversation_annotations`, `<4` adds the `conversation_reads` table (per-thread
+last-read timestamp that drives the unread/bold indicator in the chat list). **Bump `version` and
+add an `onUpgrade` branch for any schema change** — existing installs carry real user data.
 
 Android permissions (`READ_SMS`/`RECEIVE_SMS`/`READ_CONTACTS`, **no SEND_SMS, no WRITE_CONTACTS**)
 and the `sms:` `<queries>` entry live in `android/app/src/main/AndroidManifest.xml`. The Android
