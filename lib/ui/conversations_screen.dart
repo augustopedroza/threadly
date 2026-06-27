@@ -40,6 +40,11 @@ class _ConversationsScreenState extends State<ConversationsScreen>
   List<({int id, String? name, int? categoryId, List<String> members})>
       _pendingGroups = const [];
 
+  /// conversation id -> epoch-ms of the newest message marked read locally, so a
+  /// tapped conversation clears its unread dot/bold immediately (without waiting
+  /// for Google Messages to drop its notification).
+  Map<String, int> _reads = const {};
+
   bool _searching = false;
   String _query = '';
   final TextEditingController _searchController = TextEditingController();
@@ -105,6 +110,7 @@ class _ConversationsScreenState extends State<ConversationsScreen>
     final pendingGroups = await _store.pendingGroups();
     final memberships = await _store.allMemberships();
     final annotations = await _store.allAnnotations();
+    final reads = await _store.allReads();
     if (!mounted) return;
     setState(() {
       _granted = granted;
@@ -114,6 +120,7 @@ class _ConversationsScreenState extends State<ConversationsScreen>
       _pendingGroups = pendingGroups;
       _memberships = memberships;
       _annotations = annotations;
+      _reads = reads;
       _loading = false;
     });
   }
@@ -367,7 +374,7 @@ class _ConversationsScreenState extends State<ConversationsScreen>
   Widget _tile(Conversation c) {
     final ann = _annotations[c.id];
     final photo = c.isGroup ? null : _contacts.photoForTitle(c.title);
-    final unread = c.unread;
+    final unread = _isUnread(c);
     final hasName = ann?.name?.isNotEmpty == true;
     final hasNote = ann?.note?.isNotEmpty == true;
     final chips = [
@@ -465,7 +472,27 @@ class _ConversationsScreenState extends State<ConversationsScreen>
   /// number, the sms: deep link reliably lands on that exact thread (and doesn't
   /// depend on a live notification). Otherwise fall back to the notification's
   /// contentIntent / launching Messages. Warns if nothing could be opened.
+  /// Unread when Google Messages still has a live notification *and* the user
+  /// hasn't locally marked it read up to its latest activity (see [_markRead]).
+  bool _isUnread(Conversation c) {
+    if (!c.unread) return false;
+    final lastRead = _reads[c.id];
+    return lastRead == null ||
+        c.lastActivity.millisecondsSinceEpoch > lastRead;
+  }
+
+  /// Mark [c] read locally up to its newest message so its dot/bold clear at
+  /// once. Re-marks as unread only when a newer message later arrives.
+  Future<void> _markRead(Conversation c) async {
+    final ms = c.lastActivity.millisecondsSinceEpoch;
+    final prev = _reads[c.id];
+    if (prev != null && prev >= ms) return;
+    await _store.markRead(c.id, ms);
+    if (mounted) setState(() => _reads = {..._reads, c.id: ms});
+  }
+
   Future<void> _open(Conversation c) async {
+    await _markRead(c);
     if (!c.isGroup) {
       final number =
           _contacts.phoneForName(c.title) ?? _numberFromTitle(c.title);
