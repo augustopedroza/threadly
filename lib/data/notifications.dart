@@ -31,6 +31,9 @@ class Conversation {
   /// numbers via contacts when [members] is empty.
   final List<String> senders;
 
+  /// Diagnostic string of the raw group signals the notification carried.
+  final String dbg;
+
   const Conversation({
     required this.id,
     required this.title,
@@ -39,6 +42,7 @@ class Conversation {
     required this.isGroup,
     this.members = const [],
     this.senders = const [],
+    this.dbg = '',
   });
 }
 
@@ -83,6 +87,7 @@ class NotificationConversationsService {
               .split('\u0001')
               .where((s) => s.isNotEmpty)
               .toList(),
+          dbg: (m['dbg'] as String?) ?? '',
         ),
     ];
   }

@@ -83,11 +83,19 @@ class ConversationNotificationListener : NotificationListenerService() {
         convos.optJSONObject(id)?.optString("senders", "")
             ?.split("\u0001")?.forEach { if (it.isNotEmpty()) senders.add(it) }
         senders.addAll(extractSenders(extras))
+        // Diagnostic: raw group signals this notification carried.
+        val dbgFlag =
+            if (extras.getBoolean("android.isGroupConversation", false)) 1 else 0
+        val dbgTitle = if (!extras.getCharSequence("android.conversationTitle")
+                .isNullOrBlank()) 1 else 0
+        val dbg = "flag=$dbgFlag convTitle=$dbgTitle " +
+            "people=${countPeople(extras)} msgSenders=${extractSenders(extras).size}"
         val entry = JSONObject()
             .put("title", title)
             .put("ts", sbn.postTime)
             .put("group", isGroup)
             .put("members", members.joinToString(","))
+            .put("dbg", dbg)
             .put("senders", senders.joinToString("\u0001"))
         convos.put(id, entry)
         store.edit().putString(KEY_CONVOS, convos.toString()).apply()
@@ -111,6 +119,17 @@ class ConversationNotificationListener : NotificationListenerService() {
      * each message's sender Person. Only `tel:` uris yield a number (a contact
      * `content://` uri can't be turned into a number here).
      */
+    private fun countPeople(extras: Bundle): Int {
+        var n = extras.getStringArray("android.people")?.size ?: 0
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
+            @Suppress("DEPRECATION")
+            n += extras.getParcelableArrayList<android.app.Person>(
+                "android.people.list"
+            )?.size ?: 0
+        }
+        return n
+    }
+
     @Suppress("DEPRECATION")
     private fun extractNumbers(extras: Bundle): List<String> {
         val uris = mutableListOf<String>()
@@ -219,6 +238,7 @@ class ConversationNotificationListener : NotificationListenerService() {
                         .put("unread", active.contains(id))
                         .put("members", e.optString("members", ""))
                         .put("senders", e.optString("senders", ""))
+                        .put("dbg", e.optString("dbg", ""))
                 )
             }
             out.sortByDescending { it.optLong("ts") }
