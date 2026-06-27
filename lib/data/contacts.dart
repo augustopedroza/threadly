@@ -66,6 +66,14 @@ class ContactsSnapshot {
   /// A dialable phone number for a saved contact [name], or null.
   String? phoneForName(String name) => _nameToPhone[name.toLowerCase().trim()];
 
+  /// Photo for a conversation title, which may be a contact name or a raw
+  /// number (the notification source supplies titles, not numbers).
+  Uint8List? photoForTitle(String title) {
+    final byName = _nameToPhoto[title.toLowerCase().trim()];
+    if (byName != null) return byName;
+    return photoForPhone(title);
+  }
+
   /// Resolve a thread's participants to phone numbers usable for the native
   /// `sms:` handoff. Bridge participants are name-only ghosts (`gm:…`) with no
   /// number; for a 1:1 we recover it from the contact name. Returns null if any

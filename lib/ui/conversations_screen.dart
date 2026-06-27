@@ -1,0 +1,517 @@
+import 'package:flutter/material.dart';
+
+import '../data/contacts.dart';
+import '../data/notifications.dart';
+import '../data/organizer_store.dart';
+import '../format.dart';
+import '../models/category.dart';
+
+/// Bridge-free home: a pure organizer + launcher over Google Messages.
+///
+/// Conversations come from the notification listener (no message content). The
+/// app shows each with its contact avatar, a nickname/note/categories you set,
+/// an unread dot, sorted by most recent activity. Tapping hands off to Google
+/// Messages; organizing is app-owned (SQLite), keyed by the conversation id.
+class ConversationsScreen extends StatefulWidget {
+  const ConversationsScreen({super.key});
+
+  @override
+  State<ConversationsScreen> createState() => _ConversationsScreenState();
+}
+
+class _ConversationsScreenState extends State<ConversationsScreen>
+    with WidgetsBindingObserver {
+  final NotificationConversationsService _notifs =
+      NotificationConversationsService();
+  final OrganizerStore _store = OrganizerStore();
+  final ContactsService _contactsService = ContactsService();
+
+  bool _loading = true;
+  bool _granted = false;
+
+  List<Conversation> _conversations = const [];
+  List<Category> _categories = const [];
+  Map<int, Set<String>> _memberships = const {};
+  Map<String, ConversationAnnotation> _annotations = const {};
+  ContactsSnapshot _contacts = ContactsSnapshot.empty;
+
+  @override
+  void initState() {
+    super.initState();
+    WidgetsBinding.instance.addObserver(this);
+    _load();
+  }
+
+  @override
+  void dispose() {
+    WidgetsBinding.instance.removeObserver(this);
+    super.dispose();
+  }
+
+  @override
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+    // Returning from Google Messages: re-pull so anything you just read there
+    // (its notification removed) clears its unread dot.
+    if (state == AppLifecycleState.resumed) _load();
+  }
+
+  Future<void> _load() async {
+    setState(() => _loading = true);
+    final granted = await _notifs.permissionGranted();
+    ContactsSnapshot contacts = ContactsSnapshot.empty;
+    try {
+      contacts = await _contactsService.load();
+    } catch (_) {
+      contacts = ContactsSnapshot.empty;
+    }
+    final conversations = granted ? await _notifs.conversations() : const <Conversation>[];
+    final categories = await _store.categories();
+    final memberships = await _store.allMemberships();
+    final annotations = await _store.allAnnotations();
+    if (!mounted) return;
+    setState(() {
+      _granted = granted;
+      _contacts = contacts;
+      _conversations = conversations;
+      _categories = categories;
+      _memberships = memberships;
+      _annotations = annotations;
+      _loading = false;
+    });
+  }
+
+  Set<int> _categoryIdsFor(Conversation c) => {
+        for (final cat in _categories)
+          if ((_memberships[cat.id] ?? const {}).contains(c.id)) cat.id,
+      };
+
+  List<Conversation> _forCategory(int categoryId) {
+    final members = _memberships[categoryId] ?? const {};
+    return _conversations.where((c) => members.contains(c.id)).toList();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final tabs = ['All', ..._categories.map((c) => c.name)];
+    return DefaultTabController(
+      key: ValueKey(_categories.map((c) => c.id).join(',')),
+      length: tabs.length,
+      child: Scaffold(
+        appBar: AppBar(
+          title: const Text('Chats'),
+          bottom: (!_granted || _loading)
+              ? null
+              : TabBar(
+                  isScrollable: true,
+                  tabs: [for (final t in tabs) Tab(text: t)],
+                ),
+          actions: [
+            IconButton(
+              tooltip: 'Refresh',
+              icon: const Icon(Icons.refresh),
+              onPressed: _load,
+            ),
+          ],
+        ),
+        body: _body(),
+      ),
+    );
+  }
+
+  Widget _body() {
+    if (_loading) return const Center(child: CircularProgressIndicator());
+    if (!_granted) return _onboarding();
+    if (_conversations.isEmpty) {
+      return const Center(
+        child: Padding(
+          padding: EdgeInsets.all(24),
+          child: Text(
+            'No conversations yet.\n\nThey appear here as new messages arrive '
+            'in Google Messages.',
+            textAlign: TextAlign.center,
+          ),
+        ),
+      );
+    }
+    return TabBarView(
+      children: [
+        _list(_conversations),
+        for (final c in _categories) _list(_forCategory(c.id)),
+      ],
+    );
+  }
+
+  Widget _list(List<Conversation> items) {
+    if (items.isEmpty) {
+      return const Center(child: Text('No conversations here.'));
+    }
+    return ListView.builder(
+      itemCount: items.length,
+      itemBuilder: (_, i) => _tile(items[i]),
+    );
+  }
+
+  Widget _onboarding() {
+    return Center(
+      child: Padding(
+        padding: const EdgeInsets.all(24),
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            const Icon(Icons.notifications_active_outlined, size: 48),
+            const SizedBox(height: 16),
+            Text(
+              'Let Threadly see new messages',
+              style: Theme.of(context).textTheme.titleMedium,
+              textAlign: TextAlign.center,
+            ),
+            const SizedBox(height: 8),
+            const Text(
+              'To know when a conversation has a new message, Threadly needs '
+              '“notification access” to read Google Messages’ notifications. '
+              'It only reads them as a signal — it never shows notifications of '
+              'its own, and never reads message content.',
+              textAlign: TextAlign.center,
+            ),
+            const SizedBox(height: 20),
+            FilledButton.icon(
+              onPressed: () async {
+                await _notifs.openSettings();
+              },
+              icon: const Icon(Icons.settings),
+              label: const Text('Grant notification access'),
+            ),
+            const SizedBox(height: 8),
+            TextButton(
+              onPressed: _load,
+              child: const Text('I’ve enabled it — refresh'),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  Widget _tile(Conversation c) {
+    final ann = _annotations[c.id];
+    final photo = c.isGroup ? null : _contacts.photoForTitle(c.title);
+    final unread = c.unread;
+    final hasName = ann?.name?.isNotEmpty == true;
+    final hasNote = ann?.note?.isNotEmpty == true;
+    final chips = [
+      for (final cat in _categories)
+        if (_categoryIdsFor(c).contains(cat.id)) cat,
+    ];
+    final subtitle = <Widget>[
+      if (hasName)
+        Text(ann!.name!,
+            maxLines: 1,
+            overflow: TextOverflow.ellipsis,
+            style: const TextStyle(fontWeight: FontWeight.w600)),
+      if (hasNote)
+        Text(ann!.note!,
+            maxLines: 1,
+            overflow: TextOverflow.ellipsis,
+            style: const TextStyle(fontStyle: FontStyle.italic)),
+      if (chips.isNotEmpty)
+        Padding(
+          padding: const EdgeInsets.only(top: 4),
+          child: Wrap(
+            spacing: 4,
+            runSpacing: 4,
+            children: [
+              for (final cat in chips)
+                _MiniChip(label: cat.name, color: Color(cat.color)),
+            ],
+          ),
+        ),
+    ];
+    return ListTile(
+      isThreeLine: subtitle.length > 1,
+      leading: CircleAvatar(
+        backgroundColor: ann?.color != null ? Color(ann!.color!) : null,
+        backgroundImage: photo != null ? MemoryImage(photo) : null,
+        child: photo != null
+            ? null
+            : Icon(c.isGroup ? Icons.groups : Icons.person,
+                color: ann?.color != null ? Colors.white : null),
+      ),
+      title: Row(
+        crossAxisAlignment: CrossAxisAlignment.baseline,
+        textBaseline: TextBaseline.alphabetic,
+        children: [
+          Expanded(
+            child: Text(
+              c.title.isEmpty ? 'Unknown' : c.title,
+              maxLines: 1,
+              overflow: TextOverflow.ellipsis,
+              style: unread ? const TextStyle(fontWeight: FontWeight.bold) : null,
+            ),
+          ),
+          const SizedBox(width: 8),
+          Text(
+            formatListTime(c.lastActivity),
+            style: Theme.of(context).textTheme.labelSmall?.copyWith(
+                  color: unread
+                      ? Theme.of(context).colorScheme.primary
+                      : Theme.of(context).colorScheme.onSurfaceVariant,
+                  fontWeight: unread ? FontWeight.bold : null,
+                ),
+          ),
+        ],
+      ),
+      subtitle: subtitle.isEmpty
+          ? null
+          : Column(
+              crossAxisAlignment: CrossAxisAlignment.start, children: subtitle),
+      trailing: unread
+          ? Container(
+              width: 10,
+              height: 10,
+              decoration: BoxDecoration(
+                color: Theme.of(context).colorScheme.primary,
+                shape: BoxShape.circle,
+              ),
+            )
+          : null,
+      onTap: () => _notifs.launch(c.id),
+      onLongPress: () => _organize(c),
+    );
+  }
+
+  Future<void> _organize(Conversation c) async {
+    await showModalBottomSheet<void>(
+      context: context,
+      isScrollControlled: true,
+      showDragHandle: true,
+      builder: (_) => _OrganizeSheet(
+        store: _store,
+        conversation: c,
+        categories: _categories,
+        selectedCategoryIds: _categoryIdsFor(c),
+        annotation: _annotations[c.id],
+      ),
+    );
+    // Toggles/notes persist live; reload to reflect them (also covers dismiss
+    // without an explicit Save).
+    if (mounted) _load();
+  }
+}
+
+/// Small category pill shown under a conversation.
+class _MiniChip extends StatelessWidget {
+  final String label;
+  final Color color;
+  const _MiniChip({required this.label, required this.color});
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 2),
+      decoration: BoxDecoration(
+        color: color.withValues(alpha: 0.18),
+        borderRadius: BorderRadius.circular(10),
+      ),
+      child: Row(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          Padding(
+            padding: const EdgeInsets.only(right: 4),
+            child: CircleAvatar(radius: 4, backgroundColor: color),
+          ),
+          Text(label, style: Theme.of(context).textTheme.labelSmall),
+        ],
+      ),
+    );
+  }
+}
+
+const List<int> _palette = [
+  0xFF1E88E5, 0xFF43A047, 0xFFE53935, 0xFFFB8C00,
+  0xFF8E24AA, 0xFF00897B, 0xFF6D4C41, 0xFF3949AB,
+];
+
+/// Per-conversation organize editor: nickname, note, color, and category
+/// toggles. Writes to [OrganizerStore] keyed by the conversation id.
+class _OrganizeSheet extends StatefulWidget {
+  final OrganizerStore store;
+  final Conversation conversation;
+  final List<Category> categories;
+  final Set<int> selectedCategoryIds;
+  final ConversationAnnotation? annotation;
+
+  const _OrganizeSheet({
+    required this.store,
+    required this.conversation,
+    required this.categories,
+    required this.selectedCategoryIds,
+    required this.annotation,
+  });
+
+  @override
+  State<_OrganizeSheet> createState() => _OrganizeSheetState();
+}
+
+class _OrganizeSheetState extends State<_OrganizeSheet> {
+  late final TextEditingController _name =
+      TextEditingController(text: widget.annotation?.name ?? '');
+  late final TextEditingController _note =
+      TextEditingController(text: widget.annotation?.note ?? '');
+  late int? _color = widget.annotation?.color;
+  late List<Category> _categories = widget.categories;
+  late final Set<int> _selected = {...widget.selectedCategoryIds};
+
+  @override
+  void dispose() {
+    _name.dispose();
+    _note.dispose();
+    super.dispose();
+  }
+
+  Future<void> _toggleCategory(Category c, bool on) async {
+    await widget.store
+        .setMembership(c.id, widget.conversation.id, on);
+    setState(() => on ? _selected.add(c.id) : _selected.remove(c.id));
+  }
+
+  Future<void> _addCategory() async {
+    final controller = TextEditingController();
+    final name = await showDialog<String>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: const Text('New category'),
+        content: TextField(
+          controller: controller,
+          autofocus: true,
+          decoration: const InputDecoration(hintText: 'e.g. Family, U17 Team'),
+        ),
+        actions: [
+          TextButton(
+              onPressed: () => Navigator.pop(ctx), child: const Text('Cancel')),
+          FilledButton(
+              onPressed: () => Navigator.pop(ctx, controller.text.trim()),
+              child: const Text('Create')),
+        ],
+      ),
+    );
+    if (name == null || name.isEmpty) return;
+    final cat = await widget.store.createCategory(name, _palette.first);
+    await _toggleCategory(cat, true);
+    final cats = await widget.store.categories();
+    if (mounted) setState(() => _categories = cats);
+  }
+
+  Future<void> _save() async {
+    await widget.store.setAnnotation(
+      widget.conversation.id,
+      name: _name.text,
+      color: _color,
+      note: _note.text,
+    );
+    if (mounted) Navigator.pop(context);
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Padding(
+      padding: EdgeInsets.fromLTRB(
+          16, 0, 16, MediaQuery.of(context).viewInsets.bottom + 16),
+      child: SingleChildScrollView(
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Text(widget.conversation.title,
+                style: Theme.of(context).textTheme.titleMedium,
+                maxLines: 1,
+                overflow: TextOverflow.ellipsis),
+            const SizedBox(height: 12),
+            TextField(
+              controller: _name,
+              decoration: const InputDecoration(
+                labelText: 'Nickname (shown as a subtitle)',
+                border: OutlineInputBorder(),
+                isDense: true,
+              ),
+            ),
+            const SizedBox(height: 12),
+            TextField(
+              controller: _note,
+              decoration: const InputDecoration(
+                labelText: 'Note',
+                border: OutlineInputBorder(),
+                isDense: true,
+              ),
+              maxLines: 2,
+            ),
+            const SizedBox(height: 16),
+            Text('Color', style: Theme.of(context).textTheme.labelMedium),
+            const SizedBox(height: 8),
+            Wrap(
+              spacing: 8,
+              children: [
+                _colorDot(null),
+                for (final c in _palette) _colorDot(c),
+              ],
+            ),
+            const SizedBox(height: 16),
+            Row(
+              children: [
+                Text('Categories',
+                    style: Theme.of(context).textTheme.labelMedium),
+                const Spacer(),
+                TextButton.icon(
+                  onPressed: _addCategory,
+                  icon: const Icon(Icons.add, size: 18),
+                  label: const Text('New'),
+                ),
+              ],
+            ),
+            for (final c in _categories)
+              CheckboxListTile(
+                dense: true,
+                contentPadding: EdgeInsets.zero,
+                secondary:
+                    CircleAvatar(radius: 8, backgroundColor: Color(c.color)),
+                title: Text(c.name),
+                value: _selected.contains(c.id),
+                onChanged: (v) => _toggleCategory(c, v == true),
+              ),
+            const SizedBox(height: 8),
+            SizedBox(
+              width: double.infinity,
+              child: FilledButton(
+                onPressed: _save,
+                child: const Text('Save'),
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  Widget _colorDot(int? value) {
+    final selected = _color == value;
+    return GestureDetector(
+      onTap: () => setState(() => _color = value),
+      child: Container(
+        width: 32,
+        height: 32,
+        decoration: BoxDecoration(
+          color: value != null ? Color(value) : null,
+          shape: BoxShape.circle,
+          border: Border.all(
+            color: selected
+                ? Theme.of(context).colorScheme.primary
+                : Theme.of(context).colorScheme.outlineVariant,
+            width: selected ? 3 : 1,
+          ),
+        ),
+        child: value == null
+            ? const Icon(Icons.not_interested, size: 16)
+            : null,
+      ),
+    );
+  }
+}

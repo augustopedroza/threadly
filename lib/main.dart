@@ -10,6 +10,7 @@ import 'format.dart';
 import 'messaging.dart';
 import 'models/category.dart';
 import 'models/thread.dart';
+import 'ui/conversations_screen.dart';
 import 'ui/group_chat_editor_screen.dart';
 import 'ui/manage_categories_screen.dart';
 import 'ui/organize_sheet.dart';
@@ -35,7 +36,10 @@ class ThreadlyApp extends StatelessWidget {
         useMaterial3: true,
       ),
       themeMode: ThemeMode.system,
-      home: const ThreadListScreen(),
+      // Bridge-free branch: the home is the notification-driven organizer.
+      // The old bridge/SMS reader (ThreadListScreen) is kept in the tree but
+      // unused here.
+      home: const ConversationsScreen(),
     );
   }
 }

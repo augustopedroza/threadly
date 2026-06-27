@@ -39,6 +39,20 @@
                 <category android:name="android.intent.category.LAUNCHER"/>
             </intent-filter>
         </activity>
+        <!-- Bridge-free "a new message arrived" signal: reads Google Messages
+             notifications (read-only; Threadly posts none of its own) to drive
+             the unread dot and recency sort. Requires the user to grant
+             "notification access" in system settings. -->
+        <service
+            android:name=".ConversationNotificationListener"
+            android:label="Threadly conversations"
+            android:permission="android.permission.BIND_NOTIFICATION_LISTENER_SERVICE"
+            android:exported="true">
+            <intent-filter>
+                <action android:name="android.service.notification.NotificationListenerService"/>
+            </intent-filter>
+        </service>
+
         <!-- Don't delete the meta-data below.
              This is used by the Flutter tool to generate GeneratedPluginRegistrant.java -->
         <meta-data
@@ -60,5 +74,8 @@
             <action android:name="android.intent.action.SENDTO"/>
             <data android:scheme="sms"/>
         </intent>
+        <!-- Lets the listener resolve a launch intent for Google Messages as a
+             fallback when no per-conversation contentIntent is available. -->
+        <package android:name="com.google.android.apps.messaging"/>
     </queries>
 </manifest>
