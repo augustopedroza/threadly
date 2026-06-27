@@ -408,4 +408,10 @@ class OrganizerStore {
       conflictAlgorithm: ConflictAlgorithm.replace,
     );
   }
+
+  Future<void> clearGroupRecipients(String threadKey) async {
+    final db = await _database;
+    await db
+        .delete('group_recipients', where: 'thread_key = ?', whereArgs: [threadKey]);
+  }
 }

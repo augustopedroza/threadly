@@ -121,6 +121,15 @@ class _ConversationsScreenState extends State<ConversationsScreen>
     // and an incomplete roster opens the wrong conversation (a 1:1 or a
     // different group). Only groups created in Threadly (full picker roster, set
     // on pending-merge) get a deep-linkable recipient list.
+    //
+    // Purge any single-member group rosters left by earlier builds — they'd open
+    // a 1:1 with that one person instead of the group.
+    for (final e in groupRecipients.entries.toList()) {
+      if (e.value.length < 2) {
+        await _store.clearGroupRecipients(e.key);
+        groupRecipients.remove(e.key);
+      }
+    }
     if (!mounted) return;
     setState(() {
       _granted = granted;
@@ -238,12 +247,6 @@ class _ConversationsScreenState extends State<ConversationsScreen>
                         tooltip: 'Search',
                         icon: const Icon(Icons.search),
                         onPressed: () => setState(() => _searching = true),
-                      ),
-                    if (_granted)
-                      IconButton(
-                        tooltip: 'Diagnostics',
-                        icon: const Icon(Icons.bug_report_outlined),
-                        onPressed: _showDiagnostics,
                       ),
                     IconButton(
                       tooltip: 'New group',
@@ -709,49 +712,6 @@ class _ConversationsScreenState extends State<ConversationsScreen>
       await _store.deletePendingGroup(pg.id);
       _load();
     }
-  }
-
-  /// Temporary diagnostic: what each conversation's notification carried
-  /// (harvested member numbers, sender names) and what we resolved/stored — to
-  /// pin down why incoming groups can't be deep-linked.
-  Future<void> _showDiagnostics() async {
-    final b = StringBuffer()
-      ..writeln('Contacts: ${_contacts.available} '
-          '(people=${_contacts.people.length})')
-      ..writeln('Conversations: ${_conversations.length}')
-      ..writeln('');
-    final groupsFirst = [
-      ..._conversations.where((c) => c.isGroup),
-      ..._conversations.where((c) => !c.isGroup),
-    ];
-    for (final c in groupsFirst.take(12)) {
-      final resolved = [
-        for (final s in c.senders)
-          if (_contacts.phoneForName(s) != null) _contacts.phoneForName(s)!,
-      ];
-      b
-        ..writeln('"${c.title}" group=${c.isGroup}')
-        ..writeln('  raw: ${c.dbg}')
-        ..writeln('  members(tel)=${c.members}')
-        ..writeln('  senders=${c.senders}')
-        ..writeln('  resolved=$resolved')
-        ..writeln('  stored=${_groupRecipients[c.id] ?? []}')
-        ..writeln('');
-    }
-    await showDialog<void>(
-      context: context,
-      builder: (ctx) => AlertDialog(
-        title: const Text('Diagnostics'),
-        content: SingleChildScrollView(
-          child: SelectableText(b.toString(),
-              style: const TextStyle(fontFamily: 'monospace', fontSize: 11)),
-        ),
-        actions: [
-          TextButton(
-              onPressed: () => Navigator.pop(ctx), child: const Text('Close')),
-        ],
-      ),
-    );
   }
 
   Future<void> _newGroup() async {
