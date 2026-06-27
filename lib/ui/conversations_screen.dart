@@ -116,26 +116,11 @@ class _ConversationsScreenState extends State<ConversationsScreen>
     final annotations = await _store.allAnnotations();
     final reads = await _store.allReads();
     final groupRecipients = await _store.allGroupRecipients();
-    // Learn group member numbers we don't yet have, so even purely-incoming
-    // groups can be reopened via the sms: link. Prefer numbers the notification
-    // carried directly (tel:), else resolve its sender names via contacts.
-    for (final c in conversations) {
-      if (!c.isGroup) continue;
-      if (groupRecipients[c.id] != null && groupRecipients[c.id]!.isNotEmpty) {
-        continue;
-      }
-      var nums = c.members;
-      if (nums.isEmpty) {
-        nums = [
-          for (final s in c.senders)
-            if (contacts.phoneForName(s) != null) contacts.phoneForName(s)!,
-        ];
-      }
-      if (nums.isNotEmpty) {
-        await _store.setGroupRecipients(c.id, nums);
-        groupRecipients[c.id] = nums;
-      }
-    }
+    // NOTE: we deliberately do NOT build group recipients from harvested
+    // senders. The notification only reveals who *sent*, never the full roster,
+    // and an incomplete roster opens the wrong conversation (a 1:1 or a
+    // different group). Only groups created in Threadly (full picker roster, set
+    // on pending-merge) get a deep-linkable recipient list.
     if (!mounted) return;
     setState(() {
       _granted = granted;
@@ -581,7 +566,10 @@ class _ConversationsScreenState extends State<ConversationsScreen>
     //    other apps, so it can't be trusted as the primary route.)
     List<String>? recipients;
     if (c.isGroup) {
-      recipients = _groupRecipients[c.id];
+      // Only deep-link a group when we have its *complete* roster (2+). A
+      // partial roster would open a 1:1 or a different group.
+      final roster = _groupRecipients[c.id];
+      recipients = (roster != null && roster.length >= 2) ? roster : null;
     } else {
       final number =
           _contacts.phoneForName(c.title) ?? _numberFromTitle(c.title);
