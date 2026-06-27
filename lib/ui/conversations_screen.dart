@@ -511,11 +511,10 @@ class _ConversationsScreenState extends State<ConversationsScreen>
 
   Future<void> _open(Conversation c) async {
     await _markRead(c);
-    // 1) Exact thread via the live notification — unambiguous even for two
-    //    groups with identical members.
-    if (await _notifs.launch(c.id)) return;
-    // 2) Deep-link by number(s): the contact's number for a 1:1, or the saved
-    //    member numbers for a group we started here.
+    // 1) Deep-link by number(s) — the reliable path: the contact's number for a
+    //    1:1, or the saved/harvested member numbers for a group. (The
+    //    notification contentIntent is a trampoline that Android 12+ blocks for
+    //    other apps, so it can't be trusted as the primary route.)
     List<String>? recipients;
     if (c.isGroup) {
       recipients = _groupRecipients[c.id];
@@ -529,6 +528,8 @@ class _ConversationsScreenState extends State<ConversationsScreen>
         await openSmsCompose(recipients)) {
       return;
     }
+    // 2) No number known: try the live notification's exact-thread intent.
+    if (await _notifs.launch(c.id)) return;
     // 3) Last resort: just open Google Messages.
     if (await _notifs.openMessagesApp()) return;
     if (mounted) {
