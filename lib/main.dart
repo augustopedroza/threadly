@@ -4,6 +4,7 @@ import 'package:permission_handler/permission_handler.dart';
 import 'data/contacts.dart';
 import 'data/organizer_store.dart';
 import 'data/sms_source.dart';
+import 'format.dart';
 import 'messaging.dart';
 import 'models/category.dart';
 import 'models/thread.dart';
@@ -323,6 +324,7 @@ class _ThreadListScreenState extends State<ThreadListScreen> {
           ),
         ),
     ];
+    final latest = t.latest;
     return ListTile(
       isThreeLine: hasName || categoryChips.isNotEmpty,
       leading: CircleAvatar(
@@ -332,14 +334,47 @@ class _ThreadListScreenState extends State<ThreadListScreen> {
           color: ann?.color != null ? Colors.white : null,
         ),
       ),
-      title: Text(_contacts.titleFor(t),
-          maxLines: 1, overflow: TextOverflow.ellipsis),
+      title: Row(
+        crossAxisAlignment: CrossAxisAlignment.baseline,
+        textBaseline: TextBaseline.alphabetic,
+        children: [
+          Expanded(
+            child: Text(_contacts.titleFor(t),
+                maxLines: 1, overflow: TextOverflow.ellipsis),
+          ),
+          if (latest != null) ...[
+            const SizedBox(width: 8),
+            Text(
+              formatListTime(latest.date),
+              style: Theme.of(context).textTheme.labelSmall?.copyWith(
+                    color: Theme.of(context).colorScheme.onSurfaceVariant,
+                  ),
+            ),
+          ],
+        ],
+      ),
       subtitle: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: subtitleLines,
       ),
       onTap: () => _openThread(t),
+      onLongPress: () => _organizeThread(t),
     );
+  }
+
+  /// Open the organize editor straight from the list (long-press) so
+  /// categorizing/nicknaming a thread doesn't require entering it first.
+  Future<void> _organizeThread(MessageThread t) async {
+    final changed = await showOrganizeSheet(
+      context,
+      thread: t,
+      store: _store,
+      categories: _categories,
+      threadCategoryIds: _categoryIdsFor(t),
+      annotation: _annotations[t.participantKey],
+      contacts: _contacts,
+    );
+    if (changed) _load();
   }
 
   Future<void> _openThread(MessageThread t) async {
@@ -490,6 +525,15 @@ class ThreadScreen extends StatelessWidget {
                       style: Theme.of(context).textTheme.labelSmall,
                     ),
                   Text(m.body),
+                  const SizedBox(height: 2),
+                  Text(
+                    formatMessageTime(m.date),
+                    style: Theme.of(context).textTheme.labelSmall?.copyWith(
+                          color: Theme.of(context)
+                              .colorScheme
+                              .onSurfaceVariant,
+                        ),
+                  ),
                 ],
               ),
             ),
