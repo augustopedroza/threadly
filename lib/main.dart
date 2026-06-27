@@ -8,6 +8,7 @@ import 'format.dart';
 import 'messaging.dart';
 import 'models/category.dart';
 import 'models/thread.dart';
+import 'ui/group_chat_editor_screen.dart';
 import 'ui/manage_categories_screen.dart';
 import 'ui/organize_sheet.dart';
 
@@ -424,7 +425,69 @@ class _ThreadListScreenState extends State<ThreadListScreen> {
             gc.members.isEmpty ? null : () => launchGroupText(context, gc.members),
       ),
       onTap: gc.members.isEmpty ? null : () => launchGroupText(context, gc.members),
+      onLongPress: () => _groupChatActions(gc),
     );
+  }
+
+  /// Long-press a saved group chat to edit its roster or delete it — actions
+  /// that otherwise live only under Manage categories.
+  Future<void> _groupChatActions(GroupChat gc) async {
+    final action = await showModalBottomSheet<String>(
+      context: context,
+      builder: (ctx) => SafeArea(
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            ListTile(
+              leading: const Icon(Icons.edit_outlined),
+              title: const Text('Edit group chat'),
+              onTap: () => Navigator.pop(ctx, 'edit'),
+            ),
+            ListTile(
+              leading: const Icon(Icons.delete_outline),
+              title: const Text('Delete group chat'),
+              onTap: () => Navigator.pop(ctx, 'delete'),
+            ),
+          ],
+        ),
+      ),
+    );
+    if (!mounted || action == null) return;
+    if (action == 'edit') {
+      final changed = await Navigator.of(context).push<bool>(
+        MaterialPageRoute(
+          builder: (_) => GroupChatEditorScreen(
+            store: _store,
+            categoryId: gc.categoryId,
+            existing: gc,
+            people: _people(),
+            preselect: const {},
+          ),
+        ),
+      );
+      if (changed == true) _load();
+    } else if (action == 'delete') {
+      final ok = await showDialog<bool>(
+        context: context,
+        builder: (ctx) => AlertDialog(
+          title: const Text('Delete group chat?'),
+          content: Text(
+              '“${gc.name}” will be removed. Your texts are not affected.'),
+          actions: [
+            TextButton(
+                onPressed: () => Navigator.pop(ctx, false),
+                child: const Text('Cancel')),
+            FilledButton(
+                onPressed: () => Navigator.pop(ctx, true),
+                child: const Text('Delete')),
+          ],
+        ),
+      );
+      if (ok == true) {
+        await _store.deleteGroupChat(gc.id);
+        _load();
+      }
+    }
   }
 
   Widget _threadTile(MessageThread t) {
@@ -497,8 +560,79 @@ class _ThreadListScreenState extends State<ThreadListScreen> {
         children: subtitleLines,
       ),
       onTap: () => _openThread(t),
-      onLongPress: () => _organizeThread(t),
+      onLongPress: () => _quickCategorize(t),
     );
+  }
+
+  /// Long-press a conversation for a fast category toggle, with an "Organize…"
+  /// tile that opens the full editor (nickname/color/note). Membership writes
+  /// apply immediately so it feels like flipping switches.
+  Future<void> _quickCategorize(MessageThread t) async {
+    // No categories yet — skip straight to the full editor, which can make one.
+    if (_categories.isEmpty) return _organizeThread(t);
+
+    final selected = {..._categoryIdsFor(t)};
+    var changed = false;
+    final result = await showModalBottomSheet<String>(
+      context: context,
+      showDragHandle: true,
+      builder: (ctx) => StatefulBuilder(
+        builder: (ctx, setSheet) => SafeArea(
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Padding(
+                padding: const EdgeInsets.fromLTRB(16, 0, 16, 4),
+                child: Text('Add to category',
+                    style: Theme.of(ctx).textTheme.labelMedium),
+              ),
+              Padding(
+                padding: const EdgeInsets.fromLTRB(16, 0, 16, 8),
+                child: Text(_contacts.titleFor(t),
+                    style: Theme.of(ctx).textTheme.titleMedium,
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis),
+              ),
+              Flexible(
+                child: ListView(
+                  shrinkWrap: true,
+                  children: [
+                    for (final c in _categories)
+                      CheckboxListTile(
+                        dense: true,
+                        secondary: CircleAvatar(
+                            radius: 8, backgroundColor: Color(c.color)),
+                        title: Text(c.name),
+                        value: selected.contains(c.id),
+                        onChanged: (v) async {
+                          final add = v == true;
+                          for (final phone in t.participants) {
+                            await _store.setMembership(
+                                c.id, normalizePhone(phone), add);
+                          }
+                          changed = true;
+                          setSheet(() =>
+                              add ? selected.add(c.id) : selected.remove(c.id));
+                        },
+                      ),
+                  ],
+                ),
+              ),
+              const Divider(height: 1),
+              ListTile(
+                leading: const Icon(Icons.tune),
+                title: const Text('Organize…'),
+                subtitle: const Text('Nickname, color, note'),
+                onTap: () => Navigator.pop(ctx, 'organize'),
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+    if (changed) await _load();
+    if (result == 'organize' && mounted) await _organizeThread(t);
   }
 
   /// Open the organize editor straight from the list (long-press) so
