@@ -220,7 +220,8 @@ class _ThreadListScreenState extends State<ThreadListScreen> {
       children: [
         if (groupChats.isNotEmpty) ...[
           _subheader('Group chats'),
-          for (final (gc, category) in groupChats) _groupChatTile(gc, category),
+          for (final (gc, category) in groupChats)
+            _groupChatTile(gc, category, showCategory: true),
           if (_threads.isNotEmpty) _subheader('Conversations'),
         ],
         for (final t in _threads) _threadTile(t),
@@ -253,14 +254,28 @@ class _ThreadListScreenState extends State<ThreadListScreen> {
       );
 
   /// A saved group-chat roster row; tap (or the icon) starts a group text.
-  Widget _groupChatTile(GroupChat gc, Category category) {
+  /// [showCategory] adds a category chip (used on the "All" tab, where the
+  /// category isn't otherwise implied by the surrounding tab).
+  Widget _groupChatTile(GroupChat gc, Category category,
+      {bool showCategory = false}) {
     return ListTile(
+      isThreeLine: showCategory,
       leading: CircleAvatar(
         backgroundColor: Color(category.color),
         child: const Icon(Icons.forum, color: Colors.white),
       ),
       title: Text(gc.name, maxLines: 1, overflow: TextOverflow.ellipsis),
-      subtitle: Text(pluralPeople(gc.members.length)),
+      subtitle: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Text(pluralPeople(gc.members.length)),
+          if (showCategory)
+            Padding(
+              padding: const EdgeInsets.only(top: 4),
+              child: _MiniChip(label: category.name, color: Color(category.color)),
+            ),
+        ],
+      ),
       trailing: IconButton(
         icon: const Icon(Icons.open_in_new),
         tooltip: 'Start group text',
