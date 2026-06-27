@@ -1,7 +1,9 @@
 import 'package:flutter/material.dart';
 import 'package:permission_handler/permission_handler.dart';
 
+import 'data/bridge_config.dart';
 import 'data/contacts.dart';
+import 'data/gmessages_source.dart';
 import 'data/organizer_store.dart';
 import 'data/sms_source.dart';
 import 'format.dart';
@@ -38,7 +40,13 @@ class ThreadListScreen extends StatefulWidget {
 }
 
 class _ThreadListScreenState extends State<ThreadListScreen> {
-  final SmsSource _source = AndroidSmsSource();
+  final SmsSource _source = BridgeConfig.useBridge
+      ? GMessagesBridgeSource(
+          homeserver: BridgeConfig.homeserver,
+          user: BridgeConfig.user,
+          password: BridgeConfig.password,
+        )
+      : AndroidSmsSource();
   final OrganizerStore _store = OrganizerStore();
   final ContactsService _contactsService = ContactsService();
 
@@ -82,13 +90,15 @@ class _ThreadListScreenState extends State<ThreadListScreen> {
       _error = null;
     });
     try {
-      final status = await Permission.sms.request();
-      if (!status.isGranted) {
-        setState(() {
-          _loading = false;
-          _error = 'SMS permission is required to read your group texts.';
-        });
-        return;
+      if (_source.needsSmsPermission) {
+        final status = await Permission.sms.request();
+        if (!status.isGranted) {
+          setState(() {
+            _loading = false;
+            _error = 'SMS permission is required to read your group texts.';
+          });
+          return;
+        }
       }
       final threads = await _source.loadThreads();
       final categories = await _store.categories();

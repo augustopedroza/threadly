@@ -36,15 +36,24 @@ class MessageThread {
   final List<String> participants;
   final List<Message> messages;
 
-  MessageThread({required this.participants, required this.messages});
+  /// Optional source-provided display title (e.g. a bridge room name). When set
+  /// it wins over the participant-derived title. The SMS source leaves it null.
+  final String? sourceTitle;
+
+  MessageThread({
+    required this.participants,
+    required this.messages,
+    this.sourceTitle,
+  });
 
   bool get isGroup => participants.length > 1;
 
   Message? get latest => messages.isEmpty ? null : messages.first;
 
-  /// Human-readable title: the participant list, or the lone number.
-  String get title =>
-      participants.isEmpty ? 'Unknown' : participants.join(', ');
+  /// Human-readable title: an explicit source title, else the participant list.
+  String get title => (sourceTitle != null && sourceTitle!.isNotEmpty)
+      ? sourceTitle!
+      : (participants.isEmpty ? 'Unknown' : participants.join(', '));
 
   /// A stable key for grouping/deduping threads by participant set.
   String get participantKey {

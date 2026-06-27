@@ -26,6 +26,11 @@ class ContactsSnapshot {
   /// where known, otherwise the raw number. Falls back to the thread's own
   /// title (e.g. "Unknown") when there are no participants.
   String titleFor(MessageThread thread) {
+    // A source-provided title (e.g. a bridge room name) wins over participant
+    // resolution — the bridge already knows contact names we may not have.
+    if (thread.sourceTitle != null && thread.sourceTitle!.isNotEmpty) {
+      return thread.sourceTitle!;
+    }
     if (thread.participants.isEmpty) return thread.title;
     return thread.participants.map((p) => nameForPhone(p) ?? p).join(', ');
   }

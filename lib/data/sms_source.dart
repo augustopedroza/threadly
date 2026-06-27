@@ -11,6 +11,10 @@ abstract class SmsSource {
   /// Whether this platform can list existing threads at all.
   bool get canReadThreads;
 
+  /// Whether [loadThreads] needs Android SMS read permission (false for sources
+  /// that read over the network, like the gmessages bridge).
+  bool get needsSmsPermission;
+
   /// Load conversations, newest message first within each thread.
   Future<List<MessageThread>> loadThreads();
 }
@@ -28,6 +32,9 @@ class AndroidSmsSource implements SmsSource {
 
   @override
   bool get canReadThreads => true;
+
+  @override
+  bool get needsSmsPermission => true;
 
   @override
   Future<List<MessageThread>> loadThreads() async {
