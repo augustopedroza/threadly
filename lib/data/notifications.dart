@@ -69,11 +69,20 @@ class NotificationConversationsService {
     ];
   }
 
-  /// Open [id] in Google Messages (exact thread when the notification is still
-  /// active, otherwise the app). Returns false if nothing could be launched.
+  /// Open the *exact* [id] thread via the live notification's contentIntent.
+  /// Returns false if there's no active notification (caller should fall back).
   Future<bool> launch(String id) async {
     try {
       return await _ch.invokeMethod<bool>('launch', {'id': id}) ?? false;
+    } on PlatformException {
+      return false;
+    }
+  }
+
+  /// Open Google Messages (its inbox) as a last resort.
+  Future<bool> openMessagesApp() async {
+    try {
+      return await _ch.invokeMethod<bool>('openMessagesApp') ?? false;
     } on PlatformException {
       return false;
     }

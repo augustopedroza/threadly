@@ -37,6 +37,10 @@ class MainActivity : FlutterActivity() {
                             )
                         }
                     }
+                    "openMessagesApp" ->
+                        result.success(
+                            ConversationNotificationListener.openMessagesApp(this)
+                        )
                     else -> result.notImplemented()
                 }
             }

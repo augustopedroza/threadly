@@ -23,7 +23,7 @@ class OrganizerStore {
     final dir = await getDatabasesPath();
     return openDatabase(
       p.join(dir, 'organizer.db'),
-      version: 5,
+      version: 6,
       onCreate: (db, _) async {
         await db.execute('''
           CREATE TABLE groupings(
@@ -48,6 +48,7 @@ class OrganizerStore {
         await _createGroupChatTables(db);
         await _createReadsTable(db);
         await _createPendingGroupsTable(db);
+        await _createGroupRecipientsTable(db);
       },
       onUpgrade: (db, oldVersion, _) async {
         if (oldVersion < 2) await _createGroupChatTables(db);
@@ -57,6 +58,7 @@ class OrganizerStore {
         }
         if (oldVersion < 4) await _createReadsTable(db);
         if (oldVersion < 5) await _createPendingGroupsTable(db);
+        if (oldVersion < 6) await _createGroupRecipientsTable(db);
       },
     );
   }
@@ -87,6 +89,17 @@ class OrganizerStore {
       CREATE TABLE conversation_reads(
         thread_key TEXT PRIMARY KEY,
         last_read_ms INTEGER NOT NULL
+      )''');
+  }
+
+  /// Member phone numbers for a group conversation (added in schema v6), so the
+  /// group can be reopened via the sms: deep link (which lands on the exact
+  /// thread) even with no live notification. Keyed by the conversation id.
+  Future<void> _createGroupRecipientsTable(Database db) async {
+    await db.execute('''
+      CREATE TABLE group_recipients(
+        thread_key TEXT PRIMARY KEY,
+        members TEXT NOT NULL
       )''');
   }
 
@@ -368,5 +381,31 @@ class OrganizerStore {
   Future<void> deletePendingGroup(int id) async {
     final db = await _database;
     await db.delete('pending_groups', where: 'id = ?', whereArgs: [id]);
+  }
+
+  // --- Group recipients --------------------------------------------------
+
+  /// conversation id -> member phone numbers, for reopening a group thread via
+  /// the sms: deep link.
+  Future<Map<String, List<String>>> allGroupRecipients() async {
+    final db = await _database;
+    final rows = await db.query('group_recipients');
+    return {
+      for (final r in rows)
+        r['thread_key'] as String: (r['members'] as String)
+            .split(',')
+            .where((s) => s.isNotEmpty)
+            .toList(),
+    };
+  }
+
+  Future<void> setGroupRecipients(String threadKey, List<String> members) async {
+    if (members.isEmpty) return;
+    final db = await _database;
+    await db.insert(
+      'group_recipients',
+      {'thread_key': threadKey, 'members': members.join(',')},
+      conflictAlgorithm: ConflictAlgorithm.replace,
+    );
   }
 }

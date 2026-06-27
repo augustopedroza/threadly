@@ -45,6 +45,10 @@ class _ConversationsScreenState extends State<ConversationsScreen>
   /// for Google Messages to drop its notification).
   Map<String, int> _reads = const {};
 
+  /// conversation id -> member numbers for groups we know (created here), so we
+  /// can reopen the exact group thread via the sms: deep link.
+  Map<String, List<String>> _groupRecipients = const {};
+
   bool _searching = false;
   String _query = '';
   final TextEditingController _searchController = TextEditingController();
@@ -111,6 +115,7 @@ class _ConversationsScreenState extends State<ConversationsScreen>
     final memberships = await _store.allMemberships();
     final annotations = await _store.allAnnotations();
     final reads = await _store.allReads();
+    final groupRecipients = await _store.allGroupRecipients();
     if (!mounted) return;
     setState(() {
       _granted = granted;
@@ -121,6 +126,7 @@ class _ConversationsScreenState extends State<ConversationsScreen>
       _memberships = memberships;
       _annotations = annotations;
       _reads = reads;
+      _groupRecipients = groupRecipients;
       _loading = false;
     });
   }
@@ -156,6 +162,8 @@ class _ConversationsScreenState extends State<ConversationsScreen>
       if (pg.categoryId != null) {
         await _store.setMembership(pg.categoryId!, match.id, true);
       }
+      // Remember the members so the group can be reopened by sms: later.
+      await _store.setGroupRecipients(match.id, pg.members);
       await _store.deletePendingGroup(pg.id);
     }
   }
@@ -493,12 +501,26 @@ class _ConversationsScreenState extends State<ConversationsScreen>
 
   Future<void> _open(Conversation c) async {
     await _markRead(c);
-    if (!c.isGroup) {
+    // 1) Exact thread via the live notification — unambiguous even for two
+    //    groups with identical members.
+    if (await _notifs.launch(c.id)) return;
+    // 2) Deep-link by number(s): the contact's number for a 1:1, or the saved
+    //    member numbers for a group we started here.
+    List<String>? recipients;
+    if (c.isGroup) {
+      recipients = _groupRecipients[c.id];
+    } else {
       final number =
           _contacts.phoneForName(c.title) ?? _numberFromTitle(c.title);
-      if (number != null && await openSmsCompose([number])) return;
+      recipients = number != null ? [number] : null;
     }
-    if (await _notifs.launch(c.id)) return;
+    if (recipients != null &&
+        recipients.isNotEmpty &&
+        await openSmsCompose(recipients)) {
+      return;
+    }
+    // 3) Last resort: just open Google Messages.
+    if (await _notifs.openMessagesApp()) return;
     if (mounted) {
       ScaffoldMessenger.of(context).showSnackBar(
         const SnackBar(

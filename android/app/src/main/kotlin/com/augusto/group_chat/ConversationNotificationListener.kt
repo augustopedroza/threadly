@@ -169,24 +169,24 @@ class ConversationNotificationListener : NotificationListenerService() {
         }
 
         /**
-         * Open the conversation in Google Messages. Uses the saved contentIntent
-         * when the notification is still active (opens the exact thread); else
-         * falls back to launching Google Messages. Returns true if something was
-         * launched.
+         * Open the *exact* conversation thread via the live notification's
+         * contentIntent. Returns true only if that intent was sent — this is the
+         * one route that's unambiguous even for two groups with identical
+         * members. If there's no active notification, returns false so the caller
+         * can fall back (sms: deep link, then [openMessagesApp]).
          */
         fun launch(ctx: Context, id: String): Boolean {
-            activeIntents[id]?.let {
-                return try {
-                    it.send()
-                    true
-                } catch (_: PendingIntent.CanceledException) {
-                    launchMessagesApp(ctx)
-                }
+            val pi = activeIntents[id] ?: return false
+            return try {
+                pi.send()
+                true
+            } catch (_: PendingIntent.CanceledException) {
+                false
             }
-            return launchMessagesApp(ctx)
         }
 
-        private fun launchMessagesApp(ctx: Context): Boolean {
+        /** Open Google Messages (its inbox) as a last resort. */
+        fun openMessagesApp(ctx: Context): Boolean {
             val intent = ctx.packageManager.getLaunchIntentForPackage(MESSAGES_PKG)
                 ?: return false
             intent.addFlags(android.content.Intent.FLAG_ACTIVITY_NEW_TASK)
