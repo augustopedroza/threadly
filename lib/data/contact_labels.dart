@@ -22,19 +22,25 @@ class ContactsSnapshot {
   /// normalized phone -> contact id (for assignment).
   final Map<String, String> _phoneToContactId;
 
+  /// normalized phone -> contact display name (for showing names over numbers).
+  final Map<String, String> _phoneToName;
+
   const ContactsSnapshot({
     required this.available,
     required this.labels,
     required Map<String, Set<String>> phoneToLabelNames,
     required Map<String, String> phoneToContactId,
+    required Map<String, String> phoneToName,
   })  : _phoneToLabelNames = phoneToLabelNames,
-        _phoneToContactId = phoneToContactId;
+        _phoneToContactId = phoneToContactId,
+        _phoneToName = phoneToName;
 
   static const empty = ContactsSnapshot(
     available: false,
     labels: [],
     phoneToLabelNames: {},
     phoneToContactId: {},
+    phoneToName: {},
   );
 
   Set<String> labelsForPhone(String phone) =>
@@ -47,6 +53,17 @@ class ContactsSnapshot {
 
   String? contactIdForPhone(String phone) =>
       _phoneToContactId[normalizePhone(phone)];
+
+  /// The saved contact name for [phone], or null if the number isn't a contact.
+  String? nameForPhone(String phone) => _phoneToName[normalizePhone(phone)];
+
+  /// A display title for [thread]: each participant shown as their contact name
+  /// where known, otherwise the raw number. Falls back to the thread's own
+  /// title (e.g. "Unknown") when there are no participants.
+  String titleFor(MessageThread thread) {
+    if (thread.participants.isEmpty) return thread.title;
+    return thread.participants.map((p) => nameForPhone(p) ?? p).join(', ');
+  }
 }
 
 /// Reads and writes Contacts labels (groups) via flutter_contacts.
@@ -69,9 +86,11 @@ class ContactsLabelService {
 
     final phoneToLabelNames = <String, Set<String>>{};
     final phoneToContactId = <String, String>{};
+    final phoneToName = <String, String>{};
     for (final c in contacts) {
       final id = c.id;
       if (id == null || c.phones.isEmpty) continue;
+      final displayName = (c.displayName ?? '').trim();
       final names = (await FlutterContacts.groups.getOf(id))
           .map((g) => g.name)
           .where((n) => n.isNotEmpty)
@@ -80,6 +99,7 @@ class ContactsLabelService {
         final key = normalizePhone(phone.number);
         if (key.isEmpty) continue;
         phoneToContactId[key] = id;
+        if (displayName.isNotEmpty) phoneToName[key] = displayName;
         if (names.isNotEmpty) {
           (phoneToLabelNames[key] ??= <String>{}).addAll(names);
         }
@@ -91,6 +111,7 @@ class ContactsLabelService {
       labels: labels,
       phoneToLabelNames: phoneToLabelNames,
       phoneToContactId: phoneToContactId,
+      phoneToName: phoneToName,
     );
   }
 

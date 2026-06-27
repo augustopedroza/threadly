@@ -100,7 +100,7 @@ class _OrganizeSheetState extends State<_OrganizeSheet> {
           mainAxisSize: MainAxisSize.min,
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
-            Text(widget.thread.title,
+            Text(widget.contacts.titleFor(widget.thread),
                 style: Theme.of(context).textTheme.titleMedium,
                 maxLines: 1,
                 overflow: TextOverflow.ellipsis),

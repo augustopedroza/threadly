@@ -117,7 +117,8 @@ class _ThreadListScreenState extends State<ThreadListScreen> {
         .toList();
   }
 
-  /// Distinct people (by normalized phone) seen across all threads.
+  /// Distinct people (by normalized phone) seen across all threads. Displays the
+  /// saved contact name where known, otherwise the raw number.
   List<Person> _people() {
     final seen = <String>{};
     final out = <Person>[];
@@ -125,7 +126,7 @@ class _ThreadListScreenState extends State<ThreadListScreen> {
       for (final raw in t.participants) {
         final phone = normalizePhone(raw);
         if (phone.isEmpty || !seen.add(phone)) continue;
-        out.add((phone: phone, display: raw));
+        out.add((phone: phone, display: _contacts.nameForPhone(raw) ?? raw));
       }
     }
     out.sort((a, b) => a.display.compareTo(b.display));
@@ -334,7 +335,8 @@ class _ThreadListScreenState extends State<ThreadListScreen> {
           color: ann?.color != null ? Colors.white : null,
         ),
       ),
-      title: Text(t.title, maxLines: 1, overflow: TextOverflow.ellipsis),
+      title: Text(_contacts.titleFor(t),
+          maxLines: 1, overflow: TextOverflow.ellipsis),
       subtitle: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: subtitleLines,
@@ -443,7 +445,8 @@ class ThreadScreen extends StatelessWidget {
           crossAxisAlignment: CrossAxisAlignment.start,
           mainAxisSize: MainAxisSize.min,
           children: [
-            Text(thread.title, maxLines: 1, overflow: TextOverflow.ellipsis),
+            Text(contacts.titleFor(thread),
+                maxLines: 1, overflow: TextOverflow.ellipsis),
             if (annotation?.name?.isNotEmpty == true)
               Text(
                 annotation!.name!,
@@ -494,7 +497,7 @@ class ThreadScreen extends StatelessWidget {
                 children: [
                   if (thread.isGroup && m.isIncoming && m.address.isNotEmpty)
                     Text(
-                      m.address,
+                      contacts.nameForPhone(m.address) ?? m.address,
                       style: Theme.of(context).textTheme.labelSmall,
                     ),
                   Text(m.body),
