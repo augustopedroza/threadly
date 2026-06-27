@@ -1,16 +1,27 @@
 import 'package:flutter/material.dart';
 
+import '../data/organizer_store.dart';
 import '../messaging.dart';
 import '../models/category.dart';
 import 'people_picker.dart';
 
-/// Pick people, then hand off to the native Messages app to start the group
-/// text. Threadly doesn't own the group — "creating a group" just opens the
-/// native group composer (sms:n1,n2,…). The group then shows up in the list on
-/// its own once it receives a message.
+/// Pick people (plus an optional Threadly name + category), then hand off to the
+/// native Messages app to start the group text. Threadly doesn't own the group —
+/// "creating a group" just opens the native group composer (sms:n1,n2,…). The
+/// name/category are remembered and applied to the conversation once it appears
+/// in the list (Google Messages can't be told the name; see OrganizerStore
+/// pending groups).
 class NewGroupScreen extends StatefulWidget {
   final List<Person> people;
-  const NewGroupScreen({super.key, required this.people});
+  final List<Category> categories;
+  final OrganizerStore store;
+
+  const NewGroupScreen({
+    super.key,
+    required this.people,
+    required this.categories,
+    required this.store,
+  });
 
   @override
   State<NewGroupScreen> createState() => _NewGroupScreenState();
@@ -18,6 +29,26 @@ class NewGroupScreen extends StatefulWidget {
 
 class _NewGroupScreenState extends State<NewGroupScreen> {
   final Set<String> _selected = {};
+  final TextEditingController _name = TextEditingController();
+  int? _categoryId;
+
+  @override
+  void dispose() {
+    _name.dispose();
+    super.dispose();
+  }
+
+  Future<void> _start() async {
+    final members = _selected.toList();
+    await widget.store.createPendingGroup(
+      name: _name.text,
+      categoryId: _categoryId,
+      members: members,
+    );
+    if (!mounted) return;
+    await launchGroupText(context, members);
+    if (mounted) Navigator.of(context).pop();
+  }
 
   @override
   Widget build(BuildContext context) {
@@ -38,9 +69,40 @@ class _NewGroupScreenState extends State<NewGroupScreen> {
           : ListView(
               padding: const EdgeInsets.all(16),
               children: [
+                TextField(
+                  controller: _name,
+                  decoration: const InputDecoration(
+                    labelText: 'Group name (shown in Threadly)',
+                    border: OutlineInputBorder(),
+                    isDense: true,
+                  ),
+                ),
+                const SizedBox(height: 12),
+                DropdownButtonFormField<int?>(
+                  initialValue: _categoryId,
+                  decoration: const InputDecoration(
+                    labelText: 'Category (optional)',
+                    border: OutlineInputBorder(),
+                    isDense: true,
+                  ),
+                  items: [
+                    const DropdownMenuItem<int?>(
+                      value: null,
+                      child: Text('None'),
+                    ),
+                    for (final c in widget.categories)
+                      DropdownMenuItem<int?>(
+                        value: c.id,
+                        child: Text(c.name),
+                      ),
+                  ],
+                  onChanged: (v) => setState(() => _categoryId = v),
+                ),
+                const SizedBox(height: 8),
                 Text(
                   'Pick at least two people. This opens Google Messages to '
-                  'start the group text — nothing is sent from Threadly.',
+                  'start the group text — nothing is sent from Threadly. The '
+                  'name and category apply once the group appears here.',
                   style: Theme.of(context).textTheme.bodySmall,
                 ),
                 PeoplePicker(
@@ -56,12 +118,7 @@ class _NewGroupScreenState extends State<NewGroupScreen> {
         child: Padding(
           padding: const EdgeInsets.all(12),
           child: FilledButton.icon(
-            onPressed: canStart
-                ? () async {
-                    await launchGroupText(context, _selected.toList());
-                    if (context.mounted) Navigator.of(context).pop();
-                  }
-                : null,
+            onPressed: canStart ? _start : null,
             icon: const Icon(Icons.open_in_new),
             label: Text(
               canStart

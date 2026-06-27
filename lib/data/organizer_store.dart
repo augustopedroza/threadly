@@ -23,7 +23,7 @@ class OrganizerStore {
     final dir = await getDatabasesPath();
     return openDatabase(
       p.join(dir, 'organizer.db'),
-      version: 4,
+      version: 5,
       onCreate: (db, _) async {
         await db.execute('''
           CREATE TABLE groupings(
@@ -47,6 +47,7 @@ class OrganizerStore {
           )''');
         await _createGroupChatTables(db);
         await _createReadsTable(db);
+        await _createPendingGroupsTable(db);
       },
       onUpgrade: (db, oldVersion, _) async {
         if (oldVersion < 2) await _createGroupChatTables(db);
@@ -55,6 +56,7 @@ class OrganizerStore {
               'ALTER TABLE conversation_annotations ADD COLUMN name TEXT');
         }
         if (oldVersion < 4) await _createReadsTable(db);
+        if (oldVersion < 5) await _createPendingGroupsTable(db);
       },
     );
   }
@@ -85,6 +87,19 @@ class OrganizerStore {
       CREATE TABLE conversation_reads(
         thread_key TEXT PRIMARY KEY,
         last_read_ms INTEGER NOT NULL
+      )''');
+  }
+
+  /// Group names/categories chosen in the "new group" composer before the group
+  /// exists as a conversation (added in schema v5). Matched to the real
+  /// conversation by member names once it first appears, then applied + removed.
+  Future<void> _createPendingGroupsTable(Database db) async {
+    await db.execute('''
+      CREATE TABLE pending_groups(
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        name TEXT,
+        category_id INTEGER,
+        members TEXT NOT NULL
       )''');
   }
 
@@ -297,5 +312,48 @@ class OrganizerStore {
       {'thread_key': threadKey, 'last_read_ms': whenMs},
       conflictAlgorithm: ConflictAlgorithm.replace,
     );
+  }
+
+  // --- Pending groups ----------------------------------------------------
+
+  /// Remember a name/category for a group the user just started in the native
+  /// app, to apply when that conversation first appears. [members] are
+  /// normalized phones.
+  Future<void> createPendingGroup({
+    String? name,
+    int? categoryId,
+    required List<String> members,
+  }) async {
+    final db = await _database;
+    final cleanName = (name != null && name.trim().isNotEmpty) ? name.trim() : null;
+    if (cleanName == null && categoryId == null) return; // nothing to remember
+    await db.insert('pending_groups', {
+      'name': cleanName,
+      'category_id': categoryId,
+      'members': members.join(','),
+    });
+  }
+
+  Future<List<({int id, String? name, int? categoryId, List<String> members})>>
+      pendingGroups() async {
+    final db = await _database;
+    final rows = await db.query('pending_groups');
+    return [
+      for (final r in rows)
+        (
+          id: r['id'] as int,
+          name: r['name'] as String?,
+          categoryId: r['category_id'] as int?,
+          members: (r['members'] as String)
+              .split(',')
+              .where((s) => s.isNotEmpty)
+              .toList(),
+        ),
+    ];
+  }
+
+  Future<void> deletePendingGroup(int id) async {
+    final db = await _database;
+    await db.delete('pending_groups', where: 'id = ?', whereArgs: [id]);
   }
 }

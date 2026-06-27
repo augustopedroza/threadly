@@ -95,6 +95,10 @@ class _ConversationsScreenState extends State<ConversationsScreen>
         ? await _notifs.conversations()
         : const <Conversation>[];
     final categories = await _store.categories();
+    // Apply any pending group names/categories to groups that have now appeared.
+    if (granted && conversations.isNotEmpty) {
+      await _applyPendingGroups(conversations, contacts);
+    }
     final memberships = await _store.allMemberships();
     final annotations = await _store.allAnnotations();
     if (!mounted) return;
@@ -107,6 +111,41 @@ class _ConversationsScreenState extends State<ConversationsScreen>
       _annotations = annotations;
       _loading = false;
     });
+  }
+
+  /// Match pending group names/categories (set in the new-group composer) to
+  /// group conversations that have now appeared, by checking that every member's
+  /// contact name shows up in the conversation title. Applies then clears them.
+  Future<void> _applyPendingGroups(
+      List<Conversation> convos, ContactsSnapshot contacts) async {
+    final pendings = await _store.pendingGroups();
+    for (final pg in pendings) {
+      final memberNames = [
+        for (final m in pg.members) contacts.nameForPhone(m) ?? m,
+      ];
+      if (memberNames.isEmpty) continue;
+      Conversation? match;
+      for (final c in convos) {
+        if (!c.isGroup) continue;
+        final t = c.title.toLowerCase();
+        final allPresent = memberNames.every((n) {
+          final first = n.toLowerCase().trim().split(' ').first;
+          return first.isNotEmpty && t.contains(first);
+        });
+        if (allPresent) {
+          match = c;
+          break;
+        }
+      }
+      if (match == null) continue;
+      if (pg.name != null && pg.name!.isNotEmpty) {
+        await _store.setAnnotation(match.id, name: pg.name);
+      }
+      if (pg.categoryId != null) {
+        await _store.setMembership(pg.categoryId!, match.id, true);
+      }
+      await _store.deletePendingGroup(pg.id);
+    }
   }
 
   Set<int> _categoryIdsFor(Conversation c) => {
@@ -430,9 +469,16 @@ class _ConversationsScreenState extends State<ConversationsScreen>
   Future<void> _newGroup() async {
     await Navigator.of(context).push(
       MaterialPageRoute(
-        builder: (_) => NewGroupScreen(people: _contacts.people),
+        builder: (_) => NewGroupScreen(
+          people: _contacts.people,
+          categories: _categories,
+          store: _store,
+        ),
       ),
     );
+    // The group won't appear until it gets a message, but reload so a pending
+    // entry is in place and the contacts list is fresh.
+    if (mounted) _load();
   }
 
   Future<void> _manageCategories() async {
