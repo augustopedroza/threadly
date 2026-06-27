@@ -76,13 +76,33 @@ class ConversationNotificationListener : NotificationListenerService() {
         convos.optJSONObject(id)?.optString("members", "")
             ?.split(",")?.forEach { if (it.isNotEmpty()) members.add(it) }
         members.addAll(extractNumbers(extras))
+        // Accumulate distinct sender names too (separated by \u0001 since names
+        // can contain commas); the app resolves them to numbers via contacts
+        // when the notification didn't carry tel: numbers directly.
+        val senders = LinkedHashSet<String>()
+        convos.optJSONObject(id)?.optString("senders", "")
+            ?.split("\u0001")?.forEach { if (it.isNotEmpty()) senders.add(it) }
+        senders.addAll(extractSenders(extras))
         val entry = JSONObject()
             .put("title", title)
             .put("ts", sbn.postTime)
             .put("group", isGroup)
             .put("members", members.joinToString(","))
+            .put("senders", senders.joinToString("\u0001"))
         convos.put(id, entry)
         store.edit().putString(KEY_CONVOS, convos.toString()).apply()
+    }
+
+    /** Distinct sender display names from the bundled MessagingStyle messages. */
+    @Suppress("DEPRECATION")
+    private fun extractSenders(extras: Bundle): List<String> {
+        val out = LinkedHashSet<String>()
+        extras.getParcelableArray("android.messages")?.forEach { m ->
+            val b = m as? Bundle ?: return@forEach
+            b.getCharSequence("sender")?.toString()?.trim()
+                ?.let { if (it.isNotEmpty()) out.add(it) }
+        }
+        return out.toList()
     }
 
     /**
@@ -198,6 +218,7 @@ class ConversationNotificationListener : NotificationListenerService() {
                         .put("group", e.optBoolean("group", false))
                         .put("unread", active.contains(id))
                         .put("members", e.optString("members", ""))
+                        .put("senders", e.optString("senders", ""))
                 )
             }
             out.sortByDescending { it.optLong("ts") }
@@ -221,6 +242,21 @@ class ConversationNotificationListener : NotificationListenerService() {
             } catch (_: PendingIntent.CanceledException) {
                 false
             }
+        }
+
+        /**
+         * Forget a conversation: drop it from the persisted store so it leaves
+         * the list. It reappears only if a new message later arrives for it.
+         */
+        fun forget(ctx: Context, id: String) {
+            val store = prefs(ctx)
+            val convos = JSONObject(store.getString(KEY_CONVOS, "{}") ?: "{}")
+            convos.remove(id)
+            activeIntents.remove(id)
+            store.edit()
+                .putString(KEY_CONVOS, convos.toString())
+                .putStringSet(KEY_ACTIVE, HashSet(activeIntents.keys))
+                .apply()
         }
 
         /** Open Google Messages (its inbox) as a last resort. */

@@ -27,6 +27,10 @@ class Conversation {
   /// to reopen a group thread via the sms: deep link). May be empty.
   final List<String> members;
 
+  /// Distinct sender display names seen in the notification — resolved to
+  /// numbers via contacts when [members] is empty.
+  final List<String> senders;
+
   const Conversation({
     required this.id,
     required this.title,
@@ -34,6 +38,7 @@ class Conversation {
     required this.unread,
     required this.isGroup,
     this.members = const [],
+    this.senders = const [],
   });
 }
 
@@ -74,6 +79,10 @@ class NotificationConversationsService {
               .split(',')
               .where((s) => s.isNotEmpty)
               .toList(),
+          senders: ((m['senders'] as String?) ?? '')
+              .split('\u0001')
+              .where((s) => s.isNotEmpty)
+              .toList(),
         ),
     ];
   }
@@ -94,6 +103,16 @@ class NotificationConversationsService {
       return await _ch.invokeMethod<bool>('openMessagesApp') ?? false;
     } on PlatformException {
       return false;
+    }
+  }
+
+  /// Drop a conversation from the listener's store so it leaves the list (until
+  /// a new message arrives for it).
+  Future<void> forget(String id) async {
+    try {
+      await _ch.invokeMethod<void>('forget', {'id': id});
+    } on PlatformException {
+      // ignore — best effort
     }
   }
 }

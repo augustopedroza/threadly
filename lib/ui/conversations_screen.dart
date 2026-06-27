@@ -116,14 +116,24 @@ class _ConversationsScreenState extends State<ConversationsScreen>
     final annotations = await _store.allAnnotations();
     final reads = await _store.allReads();
     final groupRecipients = await _store.allGroupRecipients();
-    // Harvest member numbers the notification carried for groups we don't yet
-    // have, so even purely-incoming groups can be reopened via the sms: link.
+    // Learn group member numbers we don't yet have, so even purely-incoming
+    // groups can be reopened via the sms: link. Prefer numbers the notification
+    // carried directly (tel:), else resolve its sender names via contacts.
     for (final c in conversations) {
-      if (c.isGroup &&
-          c.members.isNotEmpty &&
-          (groupRecipients[c.id] == null || groupRecipients[c.id]!.isEmpty)) {
-        await _store.setGroupRecipients(c.id, c.members);
-        groupRecipients[c.id] = c.members;
+      if (!c.isGroup) continue;
+      if (groupRecipients[c.id] != null && groupRecipients[c.id]!.isNotEmpty) {
+        continue;
+      }
+      var nums = c.members;
+      if (nums.isEmpty) {
+        nums = [
+          for (final s in c.senders)
+            if (contacts.phoneForName(s) != null) contacts.phoneForName(s)!,
+        ];
+      }
+      if (nums.isNotEmpty) {
+        await _store.setGroupRecipients(c.id, nums);
+        groupRecipients[c.id] = nums;
       }
     }
     if (!mounted) return;
@@ -427,9 +437,21 @@ class _ConversationsScreenState extends State<ConversationsScreen>
           ),
         ),
     ];
-    return ListTile(
-      isThreeLine: subtitle.length > 1,
-      leading: CircleAvatar(
+    return Dismissible(
+      key: ValueKey('conv-${c.id}'),
+      direction: DismissDirection.endToStart,
+      background: Container(
+        color: Theme.of(context).colorScheme.errorContainer,
+        alignment: Alignment.centerRight,
+        padding: const EdgeInsets.symmetric(horizontal: 20),
+        child: Icon(Icons.delete_outline,
+            color: Theme.of(context).colorScheme.onErrorContainer),
+      ),
+      confirmDismiss: (_) => _confirmForget(c),
+      onDismissed: (_) => _forget(c),
+      child: ListTile(
+        isThreeLine: subtitle.length > 1,
+        leading: CircleAvatar(
         backgroundColor: ann?.color != null ? Color(ann!.color!) : null,
         backgroundImage: photo != null ? MemoryImage(photo) : null,
         child: photo != null
@@ -481,8 +503,9 @@ class _ConversationsScreenState extends State<ConversationsScreen>
               ),
             )
           : null,
-      onTap: () => _open(c),
-      onLongPress: () => _organize(c),
+        onTap: () => _open(c),
+        onLongPress: () => _organize(c),
+      ),
     );
   }
 
@@ -509,6 +532,41 @@ class _ConversationsScreenState extends State<ConversationsScreen>
     if (mounted) setState(() => _reads = {..._reads, c.id: ms});
   }
 
+  Future<bool> _confirmForget(Conversation c) async {
+    final ok = await showDialog<bool>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: const Text('Remove from list?'),
+        content: Text(
+            '“${c.title.isEmpty ? 'This conversation' : c.title}” will be '
+            'removed from Threadly. Your texts aren’t affected, and it comes '
+            'back if a new message arrives.'),
+        actions: [
+          TextButton(
+              onPressed: () => Navigator.pop(ctx, false),
+              child: const Text('Cancel')),
+          FilledButton(
+              onPressed: () => Navigator.pop(ctx, true),
+              child: const Text('Remove')),
+        ],
+      ),
+    );
+    return ok ?? false;
+  }
+
+  /// Drop a conversation from Threadly: forget it natively and clear its local
+  /// organizing (annotation + category membership).
+  Future<void> _forget(Conversation c) async {
+    setState(() =>
+        _conversations = [for (final x in _conversations) if (x.id != c.id) x]);
+    await _notifs.forget(c.id);
+    await _store.setAnnotation(c.id); // all-null clears the row
+    for (final cat in _categories) {
+      await _store.setMembership(cat.id, c.id, false);
+    }
+    if (mounted) _load();
+  }
+
   Future<void> _open(Conversation c) async {
     await _markRead(c);
     // 1) Deep-link by number(s) — the reliable path: the contact's number for a
@@ -528,9 +586,10 @@ class _ConversationsScreenState extends State<ConversationsScreen>
         await openSmsCompose(recipients)) {
       return;
     }
-    // 2) No number known: try the live notification's exact-thread intent.
-    if (await _notifs.launch(c.id)) return;
-    // 3) Last resort: just open Google Messages.
+    // 2) No number known (e.g. an incoming group we couldn't harvest numbers
+    //    for): open Google Messages. We deliberately don't use the notification
+    //    contentIntent — it's a trampoline Android 12+ blocks for other apps, so
+    //    it silently does nothing and would swallow the tap.
     if (await _notifs.openMessagesApp()) return;
     if (mounted) {
       ScaffoldMessenger.of(context).showSnackBar(

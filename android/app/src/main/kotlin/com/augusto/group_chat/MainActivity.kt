@@ -41,6 +41,15 @@ class MainActivity : FlutterActivity() {
                         result.success(
                             ConversationNotificationListener.openMessagesApp(this)
                         )
+                    "forget" -> {
+                        val id = call.argument<String>("id")
+                        if (id == null) {
+                            result.error("no_id", "Missing conversation id", null)
+                        } else {
+                            ConversationNotificationListener.forget(this, id)
+                            result.success(null)
+                        }
+                    }
                     else -> result.notImplemented()
                 }
             }
