@@ -58,6 +58,9 @@ class ConversationAnnotation {
 /// A person for membership editing: a normalized phone plus a display string.
 typedef Person = ({String phone, String display});
 
+/// "1 person" / "N people" — shared so roster counts read naturally everywhere.
+String pluralPeople(int n) => n == 1 ? '1 person' : '$n people';
+
 /// A small fixed palette so colors stay consistent and pickable.
 const List<int> kLabelPalette = [
   0xFFE53935, // red

@@ -193,7 +193,7 @@ class _EditCategoryScreenState extends State<EditCategoryScreen> {
               contentPadding: EdgeInsets.zero,
               leading: const Icon(Icons.forum_outlined),
               title: Text(gc.name),
-              subtitle: Text('${gc.members.length} people'),
+              subtitle: Text(pluralPeople(gc.members.length)),
               onTap: () => _editGroupChat(gc),
               trailing: Row(
                 mainAxisSize: MainAxisSize.min,

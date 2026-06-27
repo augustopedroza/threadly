@@ -198,21 +198,33 @@ class _ThreadListScreenState extends State<ThreadListScreen> {
     }
     return TabBarView(
       children: [
-        _threadList(_threads),
+        _allView(),
         for (final c in _categories) _categoryView(c),
       ],
     );
   }
 
-  /// The "All" tab: just the conversations.
-  Widget _threadList(List<MessageThread> visible) {
-    if (visible.isEmpty) {
+  /// The "All" tab: every saved group chat (across all categories) first, then
+  /// all conversations (including group SMS threads).
+  Widget _allView() {
+    final groupChats = [
+      for (final c in _categories)
+        for (final gc in _groupChatsByCategory[c.id] ?? const <GroupChat>[])
+          (gc, c),
+    ]..sort((a, b) => a.$1.name.toLowerCase().compareTo(b.$1.name.toLowerCase()));
+
+    if (groupChats.isEmpty && _threads.isEmpty) {
       return const Center(child: Text('No conversations here.'));
     }
-    return ListView.separated(
-      itemCount: visible.length,
-      separatorBuilder: (context, index) => const Divider(height: 1),
-      itemBuilder: (context, i) => _threadTile(visible[i]),
+    return ListView(
+      children: [
+        if (groupChats.isNotEmpty) ...[
+          _subheader('Group chats'),
+          for (final (gc, category) in groupChats) _groupChatTile(gc, category),
+          if (_threads.isNotEmpty) _subheader('Conversations'),
+        ],
+        for (final t in _threads) _threadTile(t),
+      ],
     );
   }
 
@@ -248,7 +260,7 @@ class _ThreadListScreenState extends State<ThreadListScreen> {
         child: const Icon(Icons.forum, color: Colors.white),
       ),
       title: Text(gc.name, maxLines: 1, overflow: TextOverflow.ellipsis),
-      subtitle: Text('${gc.members.length} people'),
+      subtitle: Text(pluralPeople(gc.members.length)),
       trailing: IconButton(
         icon: const Icon(Icons.open_in_new),
         tooltip: 'Start group text',
