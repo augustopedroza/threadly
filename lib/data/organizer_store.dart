@@ -353,6 +353,18 @@ class OrganizerStore {
     ];
   }
 
+  Future<void> updatePendingGroup(int id,
+      {String? name, int? categoryId}) async {
+    final db = await _database;
+    final cleanName = (name != null && name.trim().isNotEmpty) ? name.trim() : null;
+    await db.update(
+      'pending_groups',
+      {'name': cleanName, 'category_id': categoryId},
+      where: 'id = ?',
+      whereArgs: [id],
+    );
+  }
+
   Future<void> deletePendingGroup(int id) async {
     final db = await _database;
     await db.delete('pending_groups', where: 'id = ?', whereArgs: [id]);

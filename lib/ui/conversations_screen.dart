@@ -563,6 +563,11 @@ class _ConversationsScreenState extends State<ConversationsScreen>
               onTap: () => Navigator.pop(ctx, 'start'),
             ),
             ListTile(
+              leading: const Icon(Icons.edit_outlined),
+              title: const Text('Edit name & category'),
+              onTap: () => Navigator.pop(ctx, 'edit'),
+            ),
+            ListTile(
               leading: const Icon(Icons.delete_outline),
               title: const Text('Remove from list'),
               onTap: () => Navigator.pop(ctx, 'remove'),
@@ -574,6 +579,19 @@ class _ConversationsScreenState extends State<ConversationsScreen>
     if (!mounted || action == null) return;
     if (action == 'start' && pg.members.isNotEmpty) {
       await launchGroupText(context, pg.members);
+    } else if (action == 'edit') {
+      final result = await showDialog<({String? name, int? categoryId})>(
+        context: context,
+        builder: (_) => _GroupDetailsDialog(
+          categories: _categories,
+          initialName: pg.name,
+          initialCategoryId: pg.categoryId,
+        ),
+      );
+      if (result == null) return;
+      await _store.updatePendingGroup(pg.id,
+          name: result.name, categoryId: result.categoryId);
+      _load();
     } else if (action == 'remove') {
       await _store.deletePendingGroup(pg.id);
       _load();
@@ -841,6 +859,81 @@ class _OrganizeSheetState extends State<_OrganizeSheet> {
             ? const Icon(Icons.not_interested, size: 16)
             : null,
       ),
+    );
+  }
+}
+
+/// Edit a (pending) group's Threadly name and category.
+class _GroupDetailsDialog extends StatefulWidget {
+  final List<Category> categories;
+  final String? initialName;
+  final int? initialCategoryId;
+
+  const _GroupDetailsDialog({
+    required this.categories,
+    this.initialName,
+    this.initialCategoryId,
+  });
+
+  @override
+  State<_GroupDetailsDialog> createState() => _GroupDetailsDialogState();
+}
+
+class _GroupDetailsDialogState extends State<_GroupDetailsDialog> {
+  late final TextEditingController _name =
+      TextEditingController(text: widget.initialName ?? '');
+  late int? _categoryId =
+      widget.categories.any((c) => c.id == widget.initialCategoryId)
+          ? widget.initialCategoryId
+          : null;
+
+  @override
+  void dispose() {
+    _name.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return AlertDialog(
+      title: const Text('Edit group'),
+      content: Column(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          TextField(
+            controller: _name,
+            autofocus: true,
+            decoration: const InputDecoration(
+              labelText: 'Group name (shown in Threadly)',
+            ),
+          ),
+          const SizedBox(height: 16),
+          DropdownButtonFormField<int?>(
+            initialValue: _categoryId,
+            decoration: const InputDecoration(
+              labelText: 'Category',
+              isDense: true,
+            ),
+            items: [
+              const DropdownMenuItem<int?>(value: null, child: Text('None')),
+              for (final c in widget.categories)
+                DropdownMenuItem<int?>(value: c.id, child: Text(c.name)),
+            ],
+            onChanged: (v) => setState(() => _categoryId = v),
+          ),
+        ],
+      ),
+      actions: [
+        TextButton(
+          onPressed: () => Navigator.pop(context),
+          child: const Text('Cancel'),
+        ),
+        FilledButton(
+          onPressed: () => Navigator.pop(
+              context, (name: _name.text, categoryId: _categoryId)),
+          child: const Text('Save'),
+        ),
+      ],
     );
   }
 }
