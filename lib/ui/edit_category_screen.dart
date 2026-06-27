@@ -4,6 +4,7 @@ import '../data/organizer_store.dart';
 import '../messaging.dart';
 import '../models/category.dart';
 import 'group_chat_editor_screen.dart';
+import 'people_picker.dart';
 
 /// Edit a category's name, color, and member list. Saves on "Save" and returns
 /// true if anything changed.
@@ -154,21 +155,13 @@ class _EditCategoryScreenState extends State<EditCategoryScreen> {
           ),
           const SizedBox(height: 20),
           Text('Members', style: Theme.of(context).textTheme.labelLarge),
-          if (widget.people.isEmpty)
-            const Padding(
-              padding: EdgeInsets.symmetric(vertical: 8),
-              child: Text('No people found yet.'),
-            ),
-          for (final person in widget.people)
-            CheckboxListTile(
-              contentPadding: EdgeInsets.zero,
-              dense: true,
-              title: Text(person.display),
-              value: _members.contains(person.phone),
-              onChanged: (v) => setState(() => v == true
-                  ? _members.add(person.phone)
-                  : _members.remove(person.phone)),
-            ),
+          PeoplePicker(
+            people: widget.people,
+            selected: _members,
+            onChanged: (phone, selected) => setState(() => selected
+                ? _members.add(phone)
+                : _members.remove(phone)),
+          ),
 
           const SizedBox(height: 24),
           Row(

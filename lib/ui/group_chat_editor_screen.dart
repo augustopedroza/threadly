@@ -3,6 +3,7 @@ import 'package:flutter/material.dart';
 import '../data/organizer_store.dart';
 import '../messaging.dart';
 import '../models/category.dart';
+import 'people_picker.dart';
 
 /// Create or edit a named group-chat roster under a category. Members can be
 /// anyone the user has texted; saves immediately and returns true if changed.
@@ -108,21 +109,12 @@ class _GroupChatEditorScreenState extends State<GroupChatEditorScreen> {
                 ],
               ),
             ),
-          if (widget.people.isEmpty)
-            const Padding(
-              padding: EdgeInsets.symmetric(vertical: 8),
-              child: Text('No people found yet — text someone first.'),
-            ),
-          for (final person in widget.people)
-            CheckboxListTile(
-              contentPadding: EdgeInsets.zero,
-              dense: true,
-              title: Text(person.display),
-              value: _members.contains(person.phone),
-              onChanged: (v) => setState(() => v == true
-                  ? _members.add(person.phone)
-                  : _members.remove(person.phone)),
-            ),
+          PeoplePicker(
+            people: widget.people,
+            selected: _members,
+            onChanged: (phone, selected) => setState(() =>
+                selected ? _members.add(phone) : _members.remove(phone)),
+          ),
         ],
       ),
     );

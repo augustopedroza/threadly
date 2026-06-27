@@ -99,7 +99,7 @@ class _ManageCategoriesScreenState extends State<ManageCategoriesScreen> {
                           leading: CircleAvatar(backgroundColor: Color(c.color)),
                           title: Text(c.name),
                           subtitle: Text(
-                              '${_memberships[c.id]?.length ?? 0} people'),
+                              pluralPeople(_memberships[c.id]?.length ?? 0)),
                           onTap: () => _edit(c),
                           trailing: Row(
                             mainAxisSize: MainAxisSize.min,
