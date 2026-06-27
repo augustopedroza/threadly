@@ -5,6 +5,9 @@
     <uses-permission android:name="android.permission.RECEIVE_SMS"/>
     <!-- Read contact names to show over phone numbers (read-only). -->
     <uses-permission android:name="android.permission.READ_CONTACTS"/>
+    <!-- Network access for the gmessages bridge reader. Flutter only adds this
+         automatically in debug builds, so it must be declared for release. -->
+    <uses-permission android:name="android.permission.INTERNET"/>
 
     <application
         android:label="Threadly"
