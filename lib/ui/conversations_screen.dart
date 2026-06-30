@@ -102,9 +102,12 @@ class _ConversationsScreenState extends State<ConversationsScreen>
     } catch (_) {
       contacts = ContactsSnapshot.empty;
     }
-    final conversations = granted
-        ? await _notifs.conversations()
-        : const <Conversation>[];
+    final conversations = [
+      for (final c in granted
+          ? await _notifs.conversations()
+          : const <Conversation>[])
+        if (!_isAutomatedSender(c, contacts)) c,
+    ];
     final categories = await _store.categories();
     // Apply any pending group names/categories to groups that have now appeared
     // (which also removes the placeholder for that group).
@@ -180,6 +183,19 @@ class _ConversationsScreenState extends State<ConversationsScreen>
       await _store.setGroupRecipients(match.id, pg.members);
       await _store.deletePendingGroup(pg.id);
     }
+  }
+
+  /// True for an automated/short-code sender we don't want in the list: a numeric
+  /// title with fewer than 10 digits (short codes like 262966), or an unsaved
+  /// alphanumeric sender id (CHASE, GOOGLE). Real people are kept — groups, a
+  /// 10+ digit number, or a title that resolves to a saved contact.
+  bool _isAutomatedSender(Conversation c, ContactsSnapshot contacts) {
+    if (c.isGroup) return false;
+    final title = c.title.trim();
+    final digits = title.replaceAll(RegExp(r'\D'), '');
+    if (digits.length >= 10) return false; // a real phone number
+    if (contacts.phoneForName(title) != null) return false; // a saved contact
+    return true;
   }
 
   Set<int> _categoryIdsFor(Conversation c) => {
