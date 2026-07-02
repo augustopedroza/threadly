@@ -386,8 +386,9 @@ class _ConversationsScreenState extends State<ConversationsScreen>
             const Text(
               'To know when a conversation has a new message, Threadly needs '
               '“notification access” to read Google Messages’ notifications. '
-              'It only reads them as a signal — it never shows notifications of '
-              'its own, and never reads message content.',
+              'It uses them to list your conversations and show each one’s latest '
+              'message — it never shows notifications of its own, and you still '
+              'read and reply in Google Messages.',
               textAlign: TextAlign.center,
             ),
             const SizedBox(height: 20),
@@ -415,11 +416,22 @@ class _ConversationsScreenState extends State<ConversationsScreen>
     final unread = _isUnread(c);
     final hasName = ann?.name?.isNotEmpty == true;
     final hasNote = ann?.note?.isNotEmpty == true;
+    final preview = c.preview;
     final chips = [
       for (final cat in _categories)
         if (_categoryIdsFor(c).contains(cat.id)) cat,
     ];
     final subtitle = <Widget>[
+      if (preview != null)
+        Text(
+          preview,
+          maxLines: 1,
+          overflow: TextOverflow.ellipsis,
+          style: TextStyle(
+            color: Theme.of(context).colorScheme.onSurfaceVariant,
+            fontWeight: unread ? FontWeight.w600 : null,
+          ),
+        ),
       if (hasName)
         Text(
           ann!.name!,

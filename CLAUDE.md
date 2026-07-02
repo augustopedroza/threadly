@@ -5,23 +5,27 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 ## What this is
 
 **Threadly** — a Flutter Android app that is a "thin layer" (an organizer + launcher) over the
-user's existing texts. It does **not** read message content. It learns which conversations exist and
-when they last got a message, lets the user **organize** them (categories, custom nicknames, colors,
-notes, group rosters), then **hands off to Google Messages** for all reading and sending. It also
-reads contact names/photos (read-only) to show them over raw numbers. The pitch: organize here,
-read/send in the app you already use.
+user's existing texts. It learns which conversations exist and when they last got a message, keeps a
+one-line **last-message preview** for each, lets the user **organize** them (categories, custom
+nicknames, colors, notes, group rosters), then **hands off to Google Messages** for all reading and
+sending. It also reads contact names/photos (read-only) to show them over raw numbers. The pitch:
+organize here, read/send in the app you already use.
 
-Currently **Android-only**, and on Android intentionally **content-free**. iOS is not viable for the
-core features (see "The defining constraint").
+The **only** message content Threadly keeps is that last-message preview, and it comes straight from
+the Google Messages **notification** (never a message store), so it works across SMS/MMS/RCS alike. It
+does not read message *history* or thread bodies. Currently **Android-only**; iOS is not viable for
+the core features (see "The defining constraint").
 
 ## The defining constraint (read before changing data/platform code)
 
 "Group texts" are three incompatible, gatekept systems — **SMS/MMS**, **iMessage**, **RCS** — and on
-a modern Pixel most threads are **RCS, which no third-party app can read**. So Threadly does not read
-message content at all. Instead, the Android "source" is a **`NotificationListenerService`** that
-observes **Google Messages' notifications** purely as a *signal*: a conversation exists, its title,
-its last-activity time, and whether it's unread. It posts no notifications of its own. This requires
-the user to grant **notification access**.
+a modern Pixel most threads are **RCS, whose message store no third-party app can read**. So Threadly
+never touches the message store. Instead, the Android "source" is a **`NotificationListenerService`**
+that observes **Google Messages' notifications**: a conversation exists, its title, its last-activity
+time, whether it's unread, and the **last incoming message's text** (the notification's own preview —
+transport-blind, so it covers RCS too). It posts no notifications of its own. This requires the user
+to grant **notification access**. Note the preview is *incoming-only* (messages you send post no
+notification) and needs at least one new message after install.
 
 Consequences baked into the design:
 

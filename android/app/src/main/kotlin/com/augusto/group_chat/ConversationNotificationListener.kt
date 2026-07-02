@@ -67,12 +67,48 @@ class ConversationNotificationListener : NotificationListenerService() {
 
         val store = prefs(this)
         val convos = JSONObject(store.getString(KEY_CONVOS, "{}") ?: "{}")
+        // The last-message preview. This is the only message *content* Threadly
+        // keeps, and it comes straight from the notification (so it works for RCS
+        // too — no message store is read). If this notification carries no text
+        // (e.g. a collapsed "N new messages" summary), keep whatever we last had.
+        var preview = parsePreview(extras)
+        if (preview.isEmpty()) {
+            preview = convos.optJSONObject(id)?.optString("preview").orEmpty()
+        }
         val entry = JSONObject()
             .put("title", title)
             .put("ts", sbn.postTime)
             .put("group", isGroup)
+            .put("preview", preview)
         convos.put(id, entry)
         store.edit().putString(KEY_CONVOS, convos.toString()).apply()
+    }
+
+    /**
+     * The latest message's text for the preview line. Prefers the newest entry in
+     * the bundled MessagingStyle history (`android.messages`), falling back to the
+     * flat notification body (`EXTRA_TEXT`). Works regardless of transport
+     * (SMS/MMS/RCS) because it's the notification's own text, not the message
+     * store. Only *incoming* messages post notifications, so this reflects the
+     * last received message, not one you sent.
+     */
+    @Suppress("DEPRECATION")
+    private fun parsePreview(extras: Bundle): String {
+        var bestTime = Long.MIN_VALUE
+        var bestText = ""
+        extras.getParcelableArray("android.messages")?.forEach { m ->
+            val b = m as? Bundle ?: return@forEach
+            val text = b.getCharSequence("text")?.toString()?.trim().orEmpty()
+            if (text.isEmpty()) return@forEach
+            val time = b.getLong("time", 0L)
+            if (time >= bestTime) {
+                bestTime = time
+                bestText = text
+            }
+        }
+        if (bestText.isNotEmpty()) return bestText
+        return extras.getCharSequence(Notification.EXTRA_TEXT)?.toString()
+            ?.trim().orEmpty()
     }
 
     /**
@@ -148,6 +184,7 @@ class ConversationNotificationListener : NotificationListenerService() {
                         .put("title", e.optString("title"))
                         .put("ts", e.optLong("ts"))
                         .put("group", e.optBoolean("group", false))
+                        .put("preview", e.optString("preview"))
                         .put("unread", active.contains(id))
                 )
             }

@@ -3,9 +3,9 @@ import 'dart:convert';
 import 'package:flutter/services.dart';
 
 /// A conversation as seen through Google Messages' notifications — Threadly's
-/// bridge-free "a new message arrived" signal. There is no message content here
-/// (by design): just identity, recency, and unread state, enough to organize and
-/// hand off to the native app.
+/// bridge-free "a new message arrived" signal: identity, recency, unread state,
+/// plus the last incoming message's [preview] text (pulled from the notification,
+/// so it works for RCS too). Enough to organize and hand off to the native app.
 class Conversation {
   /// Stable per-conversation id from the notification (used as the organizing
   /// key for nicknames/notes/categories).
@@ -23,12 +23,17 @@ class Conversation {
 
   final bool isGroup;
 
+  /// The last incoming message's text, or null if none has arrived yet. From the
+  /// notification only (never a message store), so it covers RCS as well.
+  final String? preview;
+
   const Conversation({
     required this.id,
     required this.title,
     required this.lastActivity,
     required this.unread,
     required this.isGroup,
+    this.preview,
   });
 }
 
@@ -65,6 +70,10 @@ class NotificationConversationsService {
               (m['ts'] as num?)?.toInt() ?? 0),
           unread: (m['unread'] as bool?) ?? false,
           isGroup: (m['group'] as bool?) ?? false,
+          preview: () {
+            final p = (m['preview'] as String?)?.trim();
+            return (p == null || p.isEmpty) ? null : p;
+          }(),
         ),
     ];
   }
