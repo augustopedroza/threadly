@@ -23,7 +23,7 @@ class OrganizerStore {
     final dir = await getDatabasesPath();
     return openDatabase(
       p.join(dir, 'organizer.db'),
-      version: 6,
+      version: 7,
       onCreate: (db, _) async {
         await db.execute('''
           CREATE TABLE groupings(
@@ -43,7 +43,8 @@ class OrganizerStore {
             thread_key TEXT PRIMARY KEY,
             name TEXT,
             color INTEGER,
-            note TEXT
+            note TEXT,
+            remind_at INTEGER
           )''');
         await _createGroupChatTables(db);
         await _createReadsTable(db);
@@ -59,6 +60,10 @@ class OrganizerStore {
         if (oldVersion < 4) await _createReadsTable(db);
         if (oldVersion < 5) await _createPendingGroupsTable(db);
         if (oldVersion < 6) await _createGroupRecipientsTable(db);
+        if (oldVersion < 7) {
+          await db.execute(
+              'ALTER TABLE conversation_annotations ADD COLUMN remind_at INTEGER');
+        }
       },
     );
   }
@@ -279,16 +284,20 @@ class OrganizerStore {
           name: r['name'] as String?,
           color: r['color'] as int?,
           note: r['note'] as String?,
+          remindAtMs: r['remind_at'] as int?,
         ),
     };
   }
 
   Future<void> setAnnotation(String threadKey,
-      {String? name, int? color, String? note}) async {
+      {String? name, int? color, String? note, int? remindAtMs}) async {
     final db = await _database;
     final cleanNote = (note != null && note.trim().isEmpty) ? null : note?.trim();
     final cleanName = (name != null && name.trim().isEmpty) ? null : name?.trim();
-    if (color == null && cleanNote == null && cleanName == null) {
+    if (color == null &&
+        cleanNote == null &&
+        cleanName == null &&
+        remindAtMs == null) {
       await db.delete('conversation_annotations',
           where: 'thread_key = ?', whereArgs: [threadKey]);
       return;
@@ -300,6 +309,7 @@ class OrganizerStore {
         'name': cleanName,
         'color': color,
         'note': cleanNote,
+        'remind_at': remindAtMs,
       },
       conflictAlgorithm: ConflictAlgorithm.replace,
     );

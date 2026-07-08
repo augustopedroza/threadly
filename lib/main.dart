@@ -5,6 +5,7 @@ import 'data/bridge_config.dart';
 import 'data/contacts.dart';
 import 'data/gmessages_source.dart';
 import 'data/organizer_store.dart';
+import 'data/reminders.dart';
 import 'data/sms_source.dart';
 import 'format.dart';
 import 'messaging.dart';
@@ -15,7 +16,13 @@ import 'ui/group_chat_editor_screen.dart';
 import 'ui/manage_categories_screen.dart';
 import 'ui/organize_sheet.dart';
 
-void main() => runApp(const ThreadlyApp());
+Future<void> main() async {
+  WidgetsFlutterBinding.ensureInitialized();
+  // Set up the local-notifications plugin early so a tap on a fired reminder
+  // (possibly cold-starting the app) is handled, and scheduling later is cheap.
+  await ReminderService().init();
+  runApp(const ThreadlyApp());
+}
 
 class ThreadlyApp extends StatelessWidget {
   const ThreadlyApp({super.key});

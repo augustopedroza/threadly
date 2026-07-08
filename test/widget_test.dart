@@ -1,5 +1,6 @@
 import 'package:flutter_test/flutter_test.dart';
 
+import 'package:chat_organizer/models/category.dart';
 import 'package:chat_organizer/models/thread.dart';
 
 void main() {
@@ -43,5 +44,13 @@ void main() {
     );
 
     expect(thread.latest?.body, equals('newest'));
+  });
+
+  test('an annotation with only a reminder is not empty', () {
+    const bare = ConversationAnnotation(threadKey: 'k');
+    const reminded = ConversationAnnotation(threadKey: 'k', remindAtMs: 1000);
+
+    expect(bare.isEmpty, isTrue);
+    expect(reminded.isEmpty, isFalse);
   });
 }

@@ -29,7 +29,8 @@ class GroupChat {
   });
 }
 
-/// Per-conversation annotation: an ad-hoc color and/or a free-text note.
+/// Per-conversation annotation: an ad-hoc color, a free-text note, and/or a
+/// reminder.
 ///
 /// Independent of categories. Keyed by [MessageThread.participantKey].
 class ConversationAnnotation {
@@ -42,15 +43,22 @@ class ConversationAnnotation {
   final int? color;
   final String? note;
 
+  /// When to fire a local reminder notification for this conversation
+  /// (epoch ms), or null for no reminder. Kept after firing so the list can
+  /// show it as elapsed until the user clears or replaces it.
+  final int? remindAtMs;
+
   const ConversationAnnotation({
     required this.threadKey,
     this.name,
     this.color,
     this.note,
+    this.remindAtMs,
   });
 
   bool get isEmpty =>
       color == null &&
+      remindAtMs == null &&
       (note == null || note!.isEmpty) &&
       (name == null || name!.isEmpty);
 }

@@ -3,6 +3,7 @@ import 'package:flutter/material.dart';
 import '../data/contacts.dart';
 import '../data/notifications.dart';
 import '../data/organizer_store.dart';
+import '../data/reminders.dart';
 import '../format.dart';
 import '../messaging.dart';
 import '../models/category.dart';
@@ -28,6 +29,7 @@ class _ConversationsScreenState extends State<ConversationsScreen>
       NotificationConversationsService();
   final OrganizerStore _store = OrganizerStore();
   final ContactsService _contactsService = ContactsService();
+  final ReminderService _reminders = ReminderService();
 
   bool _loading = true;
   bool _granted = false;
@@ -387,8 +389,8 @@ class _ConversationsScreenState extends State<ConversationsScreen>
               'To know when a conversation has a new message, Threadly needs '
               '“notification access” to read Google Messages’ notifications. '
               'It uses them to list your conversations and show each one’s latest '
-              'message — it never shows notifications of its own, and you still '
-              'read and reply in Google Messages.',
+              'message — the only notifications it posts are reminders you set '
+              'yourself, and you still read and reply in Google Messages.',
               textAlign: TextAlign.center,
             ),
             const SizedBox(height: 20),
@@ -446,6 +448,7 @@ class _ConversationsScreenState extends State<ConversationsScreen>
           overflow: TextOverflow.ellipsis,
           style: const TextStyle(fontStyle: FontStyle.italic),
         ),
+      if (ann?.remindAtMs != null) _reminderLine(ann!.remindAtMs!),
       if (chips.isNotEmpty)
         Padding(
           padding: const EdgeInsets.only(top: 4),
@@ -531,6 +534,34 @@ class _ConversationsScreenState extends State<ConversationsScreen>
     );
   }
 
+  /// "⏰ Jul 8, 9:00 AM" under a conversation with a reminder set — primary
+  /// while pending, error-tinted once it has elapsed (so a fired reminder stays
+  /// visible until cleared or replaced in the organize sheet).
+  Widget _reminderLine(int remindAtMs) {
+    final when = DateTime.fromMillisecondsSinceEpoch(remindAtMs);
+    final elapsed = !when.isAfter(DateTime.now());
+    final color = elapsed
+        ? Theme.of(context).colorScheme.error
+        : Theme.of(context).colorScheme.primary;
+    return Padding(
+      padding: const EdgeInsets.only(top: 2),
+      child: Row(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          Icon(Icons.alarm, size: 14, color: color),
+          const SizedBox(width: 4),
+          Text(
+            formatMessageTime(when),
+            style: Theme.of(context)
+                .textTheme
+                .labelSmall
+                ?.copyWith(color: color),
+          ),
+        ],
+      ),
+    );
+  }
+
   /// Open the conversation in Google Messages. For a 1:1 with a resolvable
   /// number, the sms: deep link reliably lands on that exact thread (and doesn't
   /// depend on a live notification). Otherwise fall back to the notification's
@@ -582,6 +613,7 @@ class _ConversationsScreenState extends State<ConversationsScreen>
     setState(() =>
         _conversations = [for (final x in _conversations) if (x.id != c.id) x]);
     await _notifs.forget(c.id);
+    await _reminders.cancel(c.id);
     await _store.setAnnotation(c.id); // all-null clears the row
     for (final cat in _categories) {
       await _store.setMembership(cat.id, c.id, false);
@@ -840,8 +872,10 @@ class _OrganizeSheetState extends State<_OrganizeSheet> {
     text: widget.annotation?.note ?? '',
   );
   late int? _color = widget.annotation?.color;
+  late int? _remindAtMs = widget.annotation?.remindAtMs;
   late List<Category> _categories = widget.categories;
   late final Set<int> _selected = {...widget.selectedCategoryIds};
+  final ReminderService _reminders = ReminderService();
 
   @override
   void dispose() {
@@ -885,13 +919,77 @@ class _OrganizeSheetState extends State<_OrganizeSheet> {
     if (mounted) setState(() => _categories = cats);
   }
 
+  /// Pick a reminder date + time (must be in the future).
+  Future<void> _pickReminder() async {
+    final now = DateTime.now();
+    final current = _remindAtMs != null
+        ? DateTime.fromMillisecondsSinceEpoch(_remindAtMs!)
+        : null;
+    final initial = (current != null && current.isAfter(now))
+        ? current
+        : now.add(const Duration(hours: 1));
+    final date = await showDatePicker(
+      context: context,
+      initialDate: initial,
+      firstDate: DateTime(now.year, now.month, now.day),
+      lastDate: DateTime(now.year + 5),
+    );
+    if (date == null || !mounted) return;
+    final time = await showTimePicker(
+      context: context,
+      initialTime: TimeOfDay.fromDateTime(initial),
+    );
+    if (time == null || !mounted) return;
+    final when =
+        DateTime(date.year, date.month, date.day, time.hour, time.minute);
+    if (!when.isAfter(DateTime.now())) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('Pick a time in the future.')),
+      );
+      return;
+    }
+    setState(() => _remindAtMs = when.millisecondsSinceEpoch);
+  }
+
   Future<void> _save() async {
+    final messenger = ScaffoldMessenger.of(context);
     await widget.store.setAnnotation(
       widget.conversation.id,
       name: _name.text,
       color: _color,
       note: _note.text,
+      remindAtMs: _remindAtMs,
     );
+    final when = _remindAtMs != null
+        ? DateTime.fromMillisecondsSinceEpoch(_remindAtMs!)
+        : null;
+    if (when != null && when.isAfter(DateTime.now())) {
+      final allowed = await _reminders.ensurePermission();
+      if (!allowed) {
+        messenger.showSnackBar(const SnackBar(
+          content: Text(
+              'Notifications are off for Threadly — the reminder won’t show '
+              'until you allow them in system settings.'),
+        ));
+      }
+      final nickname = _name.text.trim();
+      final note = _note.text.trim();
+      await _reminders.schedule(
+        widget.conversation.id,
+        title: nickname.isNotEmpty
+            ? nickname
+            : (widget.conversation.title.isEmpty
+                ? 'Conversation reminder'
+                : widget.conversation.title),
+        body: note.isNotEmpty
+            ? note
+            : 'You asked to be reminded about this conversation.',
+        when: when,
+      );
+    } else {
+      // No reminder, or it was cleared/elapsed: drop any pending one.
+      await _reminders.cancel(widget.conversation.id);
+    }
     if (mounted) Navigator.pop(context);
   }
 
@@ -934,7 +1032,27 @@ class _OrganizeSheetState extends State<_OrganizeSheet> {
               ),
               maxLines: 2,
             ),
-            const SizedBox(height: 16),
+            const SizedBox(height: 4),
+            ListTile(
+              dense: true,
+              contentPadding: EdgeInsets.zero,
+              leading: const Icon(Icons.alarm),
+              title: Text(_remindAtMs == null
+                  ? 'Remind me'
+                  : 'Reminder: ${formatMessageTime(DateTime.fromMillisecondsSinceEpoch(_remindAtMs!))}'),
+              subtitle: _remindAtMs == null
+                  ? const Text('Get a notification about this conversation')
+                  : null,
+              trailing: _remindAtMs == null
+                  ? null
+                  : IconButton(
+                      tooltip: 'Clear reminder',
+                      icon: const Icon(Icons.close),
+                      onPressed: () => setState(() => _remindAtMs = null),
+                    ),
+              onTap: _pickReminder,
+            ),
+            const SizedBox(height: 8),
             Text('Color', style: Theme.of(context).textTheme.labelMedium),
             const SizedBox(height: 8),
             Wrap(

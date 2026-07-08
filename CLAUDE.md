@@ -7,7 +7,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 **Threadly** — a Flutter Android app that is a "thin layer" (an organizer + launcher) over the
 user's existing texts. It learns which conversations exist and when they last got a message, keeps a
 one-line **last-message preview** for each, lets the user **organize** them (categories, custom
-nicknames, colors, notes, group rosters), then **hands off to Google Messages** for all reading and
+nicknames, colors, notes, reminders, group rosters), then **hands off to Google Messages** for all reading and
 sending. It also reads contact names/photos (read-only) to show them over raw numbers. The pitch:
 organize here, read/send in the app you already use.
 
@@ -23,7 +23,9 @@ a modern Pixel most threads are **RCS, whose message store no third-party app ca
 never touches the message store. Instead, the Android "source" is a **`NotificationListenerService`**
 that observes **Google Messages' notifications**: a conversation exists, its title, its last-activity
 time, whether it's unread, and the **last incoming message's text** (the notification's own preview —
-transport-blind, so it covers RCS too). It posts no notifications of its own. This requires the user
+transport-blind, so it covers RCS too). The listener posts no notifications of its own (the app's
+only own notifications are user-set conversation **reminders**, see `lib/data/reminders.dart`; the
+listener filters to the GM package so they never loop back). This requires the user
 to grant **notification access**. Note the preview is *incoming-only* (messages you send post no
 notification) and needs at least one new message after install.
 
@@ -62,7 +64,9 @@ The app has two app-owned ways to associate people, both stored in its own SQLit
    Parents Carpool"). Launchable as a native group text. **Not** an SMS thread.
 
 Plus **conversation annotations** (`ConversationAnnotation`): per-conversation custom **nickname**,
-color, and note. On the notification path these (and category membership, reads, recipients) key by
+color, note, and **reminder** (`remindAtMs`, an epoch-ms instant that fires a local notification;
+kept after firing so the list shows it as elapsed until cleared). On the notification path these
+(and category membership, reads, recipients) key by
 the **conversation id**, not a phone-derived key. The nickname shows as a *subtitle* — it does
 **not** replace the title (deliberate, per user feedback).
 
@@ -75,19 +79,25 @@ on accountless devices) and only duplicated what categories already do better. C
 Mainline (notification-driven) pieces:
 
 - `android/.../ConversationNotificationListener.kt` — the `NotificationListenerService`. Watches
-  Google Messages notifications and persists, per conversation, `{title, ts, group}` plus an active
-  (= unread) set in SharedPreferences. Holds each active notification's `contentIntent` for
+  Google Messages notifications and persists, per conversation, `{title, ts, group, preview}` plus an
+  active (= unread) set in SharedPreferences. `preview` is the last *incoming* message's text, read
+  from the notification (`android.messages` newest entry, else `EXTRA_TEXT`); a collapsed "N new
+  messages" summary keeps the prior preview. Holds each active notification's `contentIntent` for
   exact-thread launch (when present). Detects a group via GM's group flag / conversation title /
   multiple distinct senders. Exposes `conversationsJson`, `launch(id)`, `forget(id)`,
   `openMessagesApp` over a `MethodChannel("threadly/notifications")` (wired in `MainActivity.kt`).
 - `lib/data/notifications.dart` — `NotificationConversationsService` (channel wrapper) +
-  `Conversation` model `{id, title, lastActivity, unread, isGroup}`. No message content.
+  `Conversation` model `{id, title, lastActivity, unread, isGroup, preview}`. The `preview` is the
+  only message content in the app; there is no message *history*.
 - `lib/ui/conversations_screen.dart` — `ConversationsScreen`, the **home** (set in `main.dart`).
-  Permission onboarding; list sorted by recency with avatars, unread dot, nickname/note/category;
-  tabs (All + categories); search; tap → handoff; long-press → organize; swipe → forget.
-  Hosts the New Group flow and inline organize sheet. Tapping resolves the open target: 1:1 →
-  `sms:` to the contact number; created group → `sms:` to its saved roster (2+); else open GM inbox.
-- `lib/ui/new_group_screen.dart` — pick people + optional name/category → `launchGroupText` + store a
+  Permission onboarding; list sorted by recency with avatars, last-message preview, unread dot,
+  nickname/note/category; tabs (All + categories); search (name/nickname/note/category — *not* the
+  preview); tap → handoff; long-press → organize; swipe → forget. Filters out short-code/automated
+  senders via `_isAutomatedSender` (keeps groups, 10+ digit numbers, saved contacts). Hosts the New
+  Group flow and the inline `_OrganizeSheet`. Tapping resolves the open target: 1:1 → `sms:` to the
+  contact number; created group → `sms:` to its saved roster (2+); else open GM inbox.
+- `lib/ui/new_group_screen.dart` — pick people (`lib/ui/people_picker.dart`, a searchable multi-select
+  shared with the legacy editors) + optional name/category → `launchGroupText` + store a
   **pending group**, applied to the real conversation when it appears.
 - `lib/ui/category_manager_screen.dart` — add/rename/recolor/delete categories.
 - `lib/data/organizer_store.dart` — `OrganizerStore`, the app-owned SQLite store. **Tables are still
@@ -98,26 +108,39 @@ Mainline (notification-driven) pieces:
 - `lib/data/contacts.dart` — `ContactsService` + immutable `ContactsSnapshot`: normalized phone →
   name (`nameForPhone`, `titleFor`), photo (`photoForTitle`), name → number (`phoneForName`), and a
   `people` list for the New Group picker. Read-only.
+- `lib/data/reminders.dart` — `ReminderService` over `flutter_local_notifications`: the user-set
+  per-conversation reminder notifications (the only notifications Threadly posts). One reminder per
+  conversation (stable FNV-1a notification id from the conversation id, so re-scheduling replaces).
+  Exact alarm when "Alarms & reminders" is allowed, else inexact; asks for the Android 13+
+  `POST_NOTIFICATIONS` runtime permission on save; survives reboots via the plugin's boot receiver.
+  Set/cleared in `_OrganizeSheet`, shown as an alarm line on the tile (error-tinted once elapsed),
+  cancelled on swipe-forget. Requires core-library desugaring (see `android/app/build.gradle.kts`).
 - `lib/messaging.dart` — the handoff: `openSmsCompose(recipients, {body})`; `launchGroupText(context,
   recipients)` warns if `recipients.length > kGroupTextWarnLimit` (20).
 - `lib/models/category.dart` / `models/thread.dart` — `Category` / `GroupChat` /
   `ConversationAnnotation` / `Person`, and `normalizePhone(raw)` (digits-only, last 10).
 
-Legacy (in tree, **unused** by the mainline): `lib/main.dart`'s `ThreadListScreen`/`ThreadScreen`,
-`lib/data/sms_source.dart`, `gmessages_source.dart`, `matrix_client.dart`, `bridge_config.dart`,
-`lib/ui/{manage_categories_screen,edit_category_screen,group_chat_editor_screen}.dart`, `bridge/`.
+Legacy (in tree, **unused** by the mainline — reachable only from `main.dart`'s `ThreadListScreen`):
+`lib/main.dart`'s `ThreadListScreen`/`ThreadScreen`, `lib/data/sms_source.dart`, `gmessages_source.dart`,
+`matrix_client.dart`, `bridge_config.dart`,
+`lib/ui/{manage_categories_screen,edit_category_screen,group_chat_editor_screen,organize_sheet}.dart`,
+`bridge/`. (`people_picker.dart` is shared: both the mainline New Group flow and these legacy editors
+use it.)
 
-### SQLite schema (organizer.db, version 6)
+### SQLite schema (organizer.db, version 7)
 
 `onCreate` builds everything; `onUpgrade` migrates: `<2` group-chat tables, `<3` `name` column on
 `conversation_annotations`, `<4` `conversation_reads`, `<5` `pending_groups` (name/category for a
 group started before it exists, applied + removed on first appearance), `<6` `group_recipients`
-(a created group's full member numbers, for `sms:` reopen). **Bump `version` and add an `onUpgrade`
+(a created group's full member numbers, for `sms:` reopen), `<7` `remind_at` column on
+`conversation_annotations`. **Bump `version` and add an `onUpgrade`
 branch for any schema change** — existing installs carry real user data.
 
 `android/app/src/main/AndroidManifest.xml`: the `ConversationNotificationListener` service
-(`BIND_NOTIFICATION_LISTENER_SERVICE`), permissions (`READ_CONTACTS`; `READ_SMS`/`RECEIVE_SMS`/
-`INTERNET` linger from the legacy paths — **no SEND_SMS, no WRITE_CONTACTS**), and `<queries>` for
+(`BIND_NOTIFICATION_LISTENER_SERVICE`), permissions (`READ_CONTACTS`; `POST_NOTIFICATIONS`/
+`SCHEDULE_EXACT_ALARM`/`RECEIVE_BOOT_COMPLETED` for reminders; `READ_SMS`/`RECEIVE_SMS`/
+`INTERNET` linger from the legacy paths — **no SEND_SMS, no WRITE_CONTACTS**), the
+`flutter_local_notifications` receivers (scheduled delivery + reboot restore), and `<queries>` for
 the `sms:` scheme + the Google Messages package. The `applicationId` is still
 `com.augusto.group_chat` (kept through the rename — do not change it).
 
