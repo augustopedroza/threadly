@@ -61,7 +61,14 @@ class ConversationNotificationListener : NotificationListenerService() {
         val extras = n.extras ?: return
 
         val (isGroup, title) = parseGroupAndTitle(extras)
-        if (title.isEmpty()) return
+        if (title.isEmpty()) {
+            // Android 15 hands *redacted* (title-less) copies to listeners it
+            // doesn't trust with sensitive notifications. Happens when access
+            // was granted via `cmd notification allow_listener` (adb) without
+            // the RECEIVE_SENSITIVE_NOTIFICATIONS appop — see CLAUDE.md.
+            android.util.Log.w(TAG, "empty title for $id — sensitive-notification redaction?")
+            return
+        }
 
         n.contentIntent?.let { activeIntents[id] = it }
 
@@ -146,6 +153,7 @@ class ConversationNotificationListener : NotificationListenerService() {
     }
 
     companion object {
+        private const val TAG = "ThreadlyListener"
         private const val MESSAGES_PKG = "com.google.android.apps.messaging"
         private const val PREFS = "threadly_notifications"
         private const val KEY_CONVOS = "conversations"

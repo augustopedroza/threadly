@@ -95,11 +95,17 @@ Mainline (notification-driven) pieces:
   preview); tap → handoff; long-press → organize; swipe → forget. Filters out short-code/automated
   senders via `_isAutomatedSender` (keeps groups, 10+ digit numbers, saved contacts). Hosts the New
   Group flow and the inline `_OrganizeSheet`. Tapping resolves the open target: 1:1 → `sms:` to the
-  contact number; created group → `sms:` to its saved roster (2+); else open GM inbox.
+  contact number; created group → `sms:` to its saved roster (2+); else open GM inbox. After a
+  handoff to a hard-to-map conversation, returning to Threadly shows a **mapping prompt**
+  (`_queueMappingPrompt` → resume): a roster-less group offers "attach members"
+  (`attach_roster_screen.dart` → `setGroupRecipients`, unlocking deep-link), a raw-number 1:1 with
+  no contact/nickname offers the organize sheet. "Don't ask" declines are in-memory (per session).
 - `lib/ui/new_group_screen.dart` — pick people (`lib/ui/people_picker.dart`, a searchable multi-select
   shared with the legacy editors) + optional name/category → `launchGroupText` + store a
   **pending group**, applied to the real conversation when it appears.
 - `lib/ui/category_manager_screen.dart` — add/rename/recolor/delete categories.
+- `lib/ui/attach_roster_screen.dart` — hand-pick an incoming group's full member list (2+; a partial
+  roster would deep-link the wrong thread). Reached from the return-from-GM mapping prompt.
 - `lib/data/organizer_store.dart` — `OrganizerStore`, the app-owned SQLite store. **Tables are still
   named `groupings` / `grouping_members` / `grouping_id`** for back-compat ("grouping" → "category"
   in UI only; don't surface "grouping"). On the notification path, annotations, reads, category
@@ -173,3 +179,14 @@ via `adb shell cmd notification allow_listener com.augusto.group_chat/com.august
 Real **group detection** and **contact photos** need a real device (the emulator's synthetic
 notifications/contacts lack those signals). The app's SQLite-backed organizing works fully on an
 emulator, no account needed.
+
+**Android 15 redaction trap (adb-granted access only):** after granting via `cmd notification
+allow_listener`, the listener receives *redacted* notifications — empty `EXTRA_TITLE`, so `record()`
+drops every one (it logs `empty title … redaction?`) and the list silently never updates. Fix:
+`adb shell appops set com.augusto.group_chat RECEIVE_SENSITIVE_NOTIFICATIONS allow`, then rebind
+(`disallow_listener` + `allow_listener`). Access granted by a user through Settings is unaffected.
+Other emulator notes: inject a conversation with `adb emu sms send <number> <text>` (seeded
+contacts own `+1310555xxxx` — use another prefix or the message lands in an existing thread);
+Google Messages must be past its first-run screen ("Use Messages without an account") before it
+posts notifications; `adb uninstall` wipes Threadly's DB but Android auto-backup usually restores
+it on reinstall.

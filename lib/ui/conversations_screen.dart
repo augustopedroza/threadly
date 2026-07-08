@@ -7,6 +7,7 @@ import '../data/reminders.dart';
 import '../format.dart';
 import '../messaging.dart';
 import '../models/category.dart';
+import 'attach_roster_screen.dart';
 import 'category_manager_screen.dart';
 import 'new_group_screen.dart';
 
@@ -51,6 +52,16 @@ class _ConversationsScreenState extends State<ConversationsScreen>
   /// can reopen the exact group thread via the sms: deep link.
   Map<String, List<String>> _groupRecipients = const {};
 
+  /// The hard-to-map conversation we just handed off to Google Messages: a
+  /// group without a deep-linkable roster, or a 1:1 that's only a raw number.
+  /// When the user comes back — having just *seen* the real thread — offer the
+  /// matching fix (attach members / add a nickname).
+  Conversation? _mappingPromptPending;
+
+  /// Conversations the user said "don't ask" for. In-memory: asking again
+  /// next session is fine, nagging within one is not.
+  final Set<String> _mappingPromptDeclined = {};
+
   bool _searching = false;
   String _query = '';
   final TextEditingController _searchController = TextEditingController();
@@ -92,7 +103,15 @@ class _ConversationsScreenState extends State<ConversationsScreen>
   void didChangeAppLifecycleState(AppLifecycleState state) {
     // Returning from Google Messages: re-pull so anything you just read there
     // (its notification removed) clears its unread dot.
-    if (state == AppLifecycleState.resumed) _load();
+    if (state != AppLifecycleState.resumed) return;
+    final pending = _mappingPromptPending;
+    _mappingPromptPending = null;
+    _load().then((_) {
+      if (pending == null || !mounted) return;
+      pending.isGroup
+          ? _offerRosterCapture(pending)
+          : _offerNickname(pending);
+    });
   }
 
   Future<void> _load() async {
@@ -641,19 +660,178 @@ class _ConversationsScreenState extends State<ConversationsScreen>
     if (recipients != null &&
         recipients.isNotEmpty &&
         await openSmsCompose(recipients)) {
+      _queueMappingPrompt(c);
       return;
     }
     // 2) No number known (e.g. an incoming group we couldn't harvest numbers
     //    for): open Google Messages. We deliberately don't use the notification
     //    contentIntent — it's a trampoline Android 12+ blocks for other apps, so
     //    it silently does nothing and would swallow the tap.
-    if (await _notifs.openMessagesApp()) return;
+    if (await _notifs.openMessagesApp()) {
+      _queueMappingPrompt(c);
+      return;
+    }
     if (mounted) {
       ScaffoldMessenger.of(context).showSnackBar(
         const SnackBar(
           content: Text("Couldn't open this conversation in Messages."),
         ),
       );
+    }
+  }
+
+  /// After handing [c] off to Google Messages, remember it for a mapping nudge
+  /// on return when it's hard to recognize in Threadly: a group without a
+  /// deep-linkable roster (fix: attach members), or a 1:1 that resolves to no
+  /// saved contact and has no nickname yet (fix: add one — no more memorizing
+  /// numbers).
+  void _queueMappingPrompt(Conversation c) {
+    if (_mappingPromptDeclined.contains(c.id)) return;
+    if (c.isGroup) {
+      final roster = _groupRecipients[c.id];
+      if (roster == null || roster.length < 2) _mappingPromptPending = c;
+    } else {
+      final hasContact = _contacts.phoneForName(c.title) != null;
+      final hasNickname = _annotations[c.id]?.name?.isNotEmpty == true;
+      if (!hasContact && !hasNickname) _mappingPromptPending = c;
+    }
+  }
+
+  /// A 1:1 that's just a raw number: after the user comes back from reading it
+  /// in Messages (so they now know who it is), offer to nickname it.
+  Future<void> _offerNickname(Conversation c) async {
+    final choice = await showModalBottomSheet<String>(
+      context: context,
+      showDragHandle: true,
+      builder: (ctx) => SafeArea(
+        child: Padding(
+          padding: const EdgeInsets.fromLTRB(24, 0, 24, 8),
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Text(
+                'Recognize “${c.title}” next time?',
+                style: Theme.of(ctx).textTheme.titleMedium,
+              ),
+              const SizedBox(height: 8),
+              const Text(
+                'This conversation only shows a phone number. If you now know '
+                'who it is, give it a nickname (or a color or category) so you '
+                'don’t have to memorize the number.',
+              ),
+              const SizedBox(height: 16),
+              SizedBox(
+                width: double.infinity,
+                child: FilledButton.icon(
+                  onPressed: () => Navigator.pop(ctx, 'add'),
+                  icon: const Icon(Icons.edit_outlined),
+                  label: const Text('Add a nickname'),
+                ),
+              ),
+              Row(
+                children: [
+                  TextButton(
+                    onPressed: () => Navigator.pop(ctx, 'later'),
+                    child: const Text('Not now'),
+                  ),
+                  const Spacer(),
+                  TextButton(
+                    onPressed: () => Navigator.pop(ctx, 'never'),
+                    child: const Text('Don’t ask for this number'),
+                  ),
+                ],
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+    if (!mounted) return;
+    if (choice == 'never') {
+      _mappingPromptDeclined.add(c.id);
+      return;
+    }
+    if (choice != 'add') return; // "Not now" or dismissed: ask next time.
+    await _organize(c);
+  }
+
+  /// Offer to capture a group's members right after the user returns from the
+  /// Messages inbox (where they presumably just had the group open, members in
+  /// view). Notifications never expose membership, so this manual step is the
+  /// only thing that makes an incoming group deep-linkable.
+  Future<void> _offerRosterCapture(Conversation c) async {
+    final choice = await showModalBottomSheet<String>(
+      context: context,
+      showDragHandle: true,
+      builder: (ctx) => SafeArea(
+        child: Padding(
+          padding: const EdgeInsets.fromLTRB(24, 0, 24, 8),
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Text(
+                'Open “${c.title.isEmpty ? 'this group' : c.title}” directly '
+                'next time?',
+                style: Theme.of(ctx).textTheme.titleMedium,
+              ),
+              const SizedBox(height: 8),
+              const Text(
+                'Threadly can’t see who is in this group, so tapping it only '
+                'opens the Messages inbox. Add its members and Threadly will '
+                'open the group itself from now on.',
+              ),
+              const SizedBox(height: 16),
+              SizedBox(
+                width: double.infinity,
+                child: FilledButton.icon(
+                  onPressed: () => Navigator.pop(ctx, 'add'),
+                  icon: const Icon(Icons.group_add_outlined),
+                  label: const Text('Add members'),
+                ),
+              ),
+              Row(
+                children: [
+                  TextButton(
+                    onPressed: () => Navigator.pop(ctx, 'later'),
+                    child: const Text('Not now'),
+                  ),
+                  const Spacer(),
+                  TextButton(
+                    onPressed: () => Navigator.pop(ctx, 'never'),
+                    child: const Text('Don’t ask for this group'),
+                  ),
+                ],
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+    if (!mounted) return;
+    if (choice == 'never') {
+      _mappingPromptDeclined.add(c.id);
+      return;
+    }
+    if (choice != 'add') return; // "Not now" or dismissed: ask next time.
+    final saved = await Navigator.of(context).push<bool>(
+      MaterialPageRoute(
+        builder: (_) => AttachRosterScreen(
+          title: c.title,
+          conversationId: c.id,
+          people: _contacts.people,
+          store: _store,
+        ),
+      ),
+    );
+    if (saved == true && mounted) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text('Members saved — this group now opens directly.'),
+        ),
+      );
+      _load();
     }
   }
 
