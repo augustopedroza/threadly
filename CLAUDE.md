@@ -38,6 +38,10 @@ Consequences baked into the design:
   `contentIntent` is a **notification trampoline Android 12+ blocks** for third-party apps. So an
   incoming group can be detected and named but **can't be deep-linked**; tapping it opens the GM
   inbox. Only groups **created in Threadly** (whose full roster we captured) deep-link to the thread.
+  **A hand-attached roster does not fix this** (tried 2026-07, reverted): an `sms:` recipient link
+  resolves to the *SMS/MMS* thread for those members, so for an incoming **RCS** group it opens a
+  *different* conversation with the same people. Created groups deep-link only because they were
+  born from that same `sms:` link (they *are* the MMS thread).
 
 **iOS is not viable** for the parts that matter: iOS forbids reading other apps' notifications or the
 Messages store, so unread state, recency, and the auto-built list are impossible. iOS could only be a
@@ -96,16 +100,14 @@ Mainline (notification-driven) pieces:
   senders via `_isAutomatedSender` (keeps groups, 10+ digit numbers, saved contacts). Hosts the New
   Group flow and the inline `_OrganizeSheet`. Tapping resolves the open target: 1:1 → `sms:` to the
   contact number; created group → `sms:` to its saved roster (2+); else open GM inbox. After a
-  handoff to a hard-to-map conversation, returning to Threadly shows a **mapping prompt**
-  (`_queueMappingPrompt` → resume): a roster-less group offers "attach members"
-  (`attach_roster_screen.dart` → `setGroupRecipients`, unlocking deep-link), a raw-number 1:1 with
-  no contact/nickname offers the organize sheet. "Don't ask" declines are in-memory (per session).
+  handoff to a raw-number 1:1 (no contact, no nickname), returning to Threadly shows a **mapping
+  prompt** (`_queueMappingPrompt` → resume) offering the organize sheet; "don't ask" declines are
+  in-memory (per session). Groups deliberately get no such prompt — see the constraint note below.
+  Swipe-forget clears the conversation's annotation, memberships, reminder, and saved roster.
 - `lib/ui/new_group_screen.dart` — pick people (`lib/ui/people_picker.dart`, a searchable multi-select
   shared with the legacy editors) + optional name/category → `launchGroupText` + store a
   **pending group**, applied to the real conversation when it appears.
 - `lib/ui/category_manager_screen.dart` — add/rename/recolor/delete categories.
-- `lib/ui/attach_roster_screen.dart` — hand-pick an incoming group's full member list (2+; a partial
-  roster would deep-link the wrong thread). Reached from the return-from-GM mapping prompt.
 - `lib/data/organizer_store.dart` — `OrganizerStore`, the app-owned SQLite store. **Tables are still
   named `groupings` / `grouping_members` / `grouping_id`** for back-compat ("grouping" → "category"
   in UI only; don't surface "grouping"). On the notification path, annotations, reads, category
