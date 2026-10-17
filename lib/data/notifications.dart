@@ -3,7 +3,7 @@ import 'dart:convert';
 import 'package:flutter/services.dart';
 
 /// A conversation as seen through Google Messages' notifications — Threadly's
-/// bridge-free "a new message arrived" signal: identity, recency, unread state,
+/// "a new message arrived" signal: identity, recency, unread state,
 /// plus the last incoming message's [preview] text (pulled from the notification,
 /// so it works for RCS too). Enough to organize and hand off to the native app.
 class Conversation {

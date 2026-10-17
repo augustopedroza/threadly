@@ -56,21 +56,25 @@ manual organizer + `sms:` launcher.
 handoff**: an `sms:recipient1,recipient2?body=...` deep link opens Google Messages (group compose for
 multiple recipients). This handoff is the product's core idea, not a fallback. See `lib/messaging.dart`.
 
-> Legacy: a prior approach read RCS via a mautrix-gmessages + Synapse **bridge** on a Mac (and before
-> that the on-device SMS provider). Both were retired in favor of the notification listener. The old
-> bridge/SMS code (`lib/data/matrix_client.dart`, `gmessages_source.dart`, `sms_source.dart`,
-> `bridge_config.dart`, `lib/main.dart`'s `ThreadListScreen`, `bridge/`, `tool/bridge_smoke.dart`)
-> remains in the tree but is **unused** by the mainline app.
+> History: earlier versions read texts via the on-device SMS provider, then via a
+> mautrix-gmessages + Synapse **bridge** (to reach RCS). Both were retired for the notification
+> listener and **deleted from the tree on 2026-10-16** along with their permissions (`READ_SMS`,
+> `RECEIVE_SMS`, `INTERNET`, cleartext traffic) and packages. To look at that code, check out the
+> commit before the removal (`f6d2ddd`). Don't reintroduce SMS permissions: Play restricts them to
+> default-SMS apps, and "Threadly can't read your messages" is part of the pitch.
 
 ## Two "grouping" concepts — do not conflate
 
-The app has two app-owned ways to associate people, both stored in its own SQLite DB:
+The app has two app-owned ways to associate conversations, both stored in its own SQLite DB:
 
-1. **Category** (`models/category.dart` `Category`) — a bucket of people (e.g. "LDS", "U17 Team").
-   Classifies both individual and group conversations and **drives the tabs**. Members are phone
-   numbers.
-2. **Group chat** (`GroupChat`) — a named, saved roster of people *under a category* (e.g. "U17
-   Parents Carpool"). Launchable as a native group text. **Not** an SMS thread.
+1. **Category** (`models/category.dart` `Category`) — a bucket (e.g. "LDS", "U17 Team").
+   Classifies both individual and group conversations and **drives the tabs**. Members are
+   conversation ids (the column is still named `phone` from the SMS era).
+2. **Created group** — a group text started from Threadly's New Group flow. It *is* a real Google
+   Messages conversation (born from an `sms:` link); Threadly just remembers its chosen name/category
+   (a **pending group** until the conversation first appears) and its full roster
+   (`group_recipients`, for the `sms:` fallback). The older saved-roster `GroupChat` concept is gone;
+   its `group_chats` tables stay in the schema, dormant.
 
 Plus **conversation annotations** (`ConversationAnnotation`): per-conversation custom **nickname**,
 color, note, and **reminder** (`remindAtMs`, an epoch-ms instant that fires a local notification;
@@ -115,8 +119,8 @@ Mainline (notification-driven) pieces:
   prompt** (`_queueMappingPrompt` → resume) offering the organize sheet; "don't ask" declines are
   in-memory (per session). Groups deliberately get no such prompt — see the constraint note below.
   Swipe-forget clears the conversation's annotation, memberships, reminder, and saved roster.
-- `lib/ui/new_group_screen.dart` — pick people (`lib/ui/people_picker.dart`, a searchable multi-select
-  shared with the legacy editors) + optional name/category → `launchGroupText` + store a
+- `lib/ui/new_group_screen.dart` — pick people (`lib/ui/people_picker.dart`, a searchable
+  multi-select) + optional name/category → `launchGroupText` + store a
   **pending group**, applied to the real conversation when it appears.
 - `lib/ui/category_manager_screen.dart` — add/rename/recolor/delete categories.
 - `lib/data/organizer_store.dart` — `OrganizerStore`, the app-owned SQLite store. **Tables are still
@@ -125,7 +129,7 @@ Mainline (notification-driven) pieces:
   membership, pending groups, and group recipients are all keyed by the **conversation id**.
   `createCategory` is **idempotent by name** (case-insensitive).
 - `lib/data/contacts.dart` — `ContactsService` + immutable `ContactsSnapshot`: normalized phone →
-  name (`nameForPhone`, `titleFor`), photo (`photoForTitle`), name → number (`phoneForName`), and a
+  name (`nameForPhone`), photo (`photoForTitle`), name → number (`phoneForName`), and a
   `people` list for the New Group picker. Read-only.
 - `lib/data/reminders.dart` — `ReminderService` over `flutter_local_notifications`: the user-set
   per-conversation reminder notifications (the only notifications Threadly posts). One reminder per
@@ -146,19 +150,14 @@ Mainline (notification-driven) pieces:
   system-only). Offered once by a sheet on the first return from Messages (unless the nickname
   prompt is showing that time); toggled from the home screen's ⋮ menu. Preference + nudged flag in
   SharedPreferences, not SQLite.
-- `lib/models/category.dart` / `models/thread.dart` — `Category` / `GroupChat` /
-  `ConversationAnnotation` / `Person`, and `normalizePhone(raw)` (digits-only, last 10).
-
-Legacy (in tree, **unused** by the mainline — reachable only from `main.dart`'s `ThreadListScreen`):
-`lib/main.dart`'s `ThreadListScreen`/`ThreadScreen`, `lib/data/sms_source.dart`, `gmessages_source.dart`,
-`matrix_client.dart`, `bridge_config.dart`,
-`lib/ui/{manage_categories_screen,edit_category_screen,group_chat_editor_screen,organize_sheet}.dart`,
-`bridge/`. (`people_picker.dart` is shared: both the mainline New Group flow and these legacy editors
-use it.)
+- `lib/models/category.dart` — `Category`, `ConversationAnnotation`, `Person`, `pluralPeople`, the
+  color palette. `lib/models/phone.dart` — `normalizePhone(raw)` (digits-only, last 10).
+- `lib/main.dart` — just `main()` (initializes reminders) and `ThreadlyApp` (theme, home).
 
 ### SQLite schema (organizer.db, version 7)
 
-`onCreate` builds everything; `onUpgrade` migrates: `<2` group-chat tables, `<3` `name` column on
+`onCreate` builds everything; `onUpgrade` migrates: `<2` group-chat tables (dormant now — no
+code reads them; kept so the schema doesn't change), `<3` `name` column on
 `conversation_annotations`, `<4` `conversation_reads`, `<5` `pending_groups` (name/category for a
 group started before it exists, applied + removed on first appearance), `<6` `group_recipients`
 (a created group's full member numbers, for `sms:` reopen), `<7` `remind_at` column on
@@ -168,8 +167,8 @@ branch for any schema change** — existing installs carry real user data.
 `android/app/src/main/AndroidManifest.xml`: the `ConversationNotificationListener` service
 (`BIND_NOTIFICATION_LISTENER_SERVICE`), permissions (`READ_CONTACTS`; `POST_NOTIFICATIONS`/
 `SCHEDULE_EXACT_ALARM`/`RECEIVE_BOOT_COMPLETED` for reminders; `SYSTEM_ALERT_WINDOW` for the
-return chip; `READ_SMS`/`RECEIVE_SMS`/
-`INTERNET` linger from the legacy paths — **no SEND_SMS, no WRITE_CONTACTS**), the
+return chip — **no SMS permissions, no INTERNET, no WRITE_CONTACTS**; the release APK's full list
+is those plus `VIBRATE` from the notifications plugin, checkable with `aapt2 dump permissions`), the
 `flutter_local_notifications` receivers (scheduled delivery + reboot restore), and `<queries>` for
 the `sms:` scheme + the Google Messages package. The `applicationId` is still
 `com.augusto.group_chat` (kept through the rename — do not change it).
@@ -183,7 +182,7 @@ The Flutter SDK here is at `/Users/acmcp/dev/flutter/bin/flutter` (may not be on
 flutter pub get                 # install deps
 flutter analyze                 # lint (must be clean; flutter_lints / analysis_options.yaml)
 flutter test                    # run all unit tests
-flutter test test/widget_test.dart --plain-name "is a group"   # run a single test by name
+flutter test test/widget_test.dart --plain-name "normalizePhone"   # run tests by name
 flutter run                     # run on a connected device/emulator
 flutter build apk --debug       # verify the full Android native stack compiles
 ```

@@ -3,7 +3,7 @@ import 'package:flutter/material.dart';
 import '../data/organizer_store.dart';
 import '../models/category.dart';
 
-/// Lightweight category management for the bridge-free home: add, rename,
+/// Lightweight category management for the home screen: add, rename,
 /// recolor, and delete categories. (Membership is set per-conversation from the
 /// organize sheet, so this screen is just the categories themselves.) Returns
 /// true if anything changed.

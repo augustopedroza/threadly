@@ -8,9 +8,9 @@ import android.service.notification.StatusBarNotification
 import org.json.JSONObject
 
 /**
- * Bridge-free conversation feed.
+ * The conversation feed.
  *
- * Threadly's "no-server" mode doesn't read message content; it only needs to
+ * Threadly doesn't read message content; it only needs to
  * know, per conversation, that it exists, when it last received a message, and
  * whether it's unread. The only on-device source for RCS (which no app can read)
  * is Google Messages' own notifications, so this [NotificationListenerService]

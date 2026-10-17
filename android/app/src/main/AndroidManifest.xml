@@ -1,13 +1,10 @@
 <manifest xmlns:android="http://schemas.android.com/apk/res/android">
-    <!-- Read SMS/MMS for the Android data source. Sending is handed off to the
-         native Messages app via the sms: deep link, so no SEND_SMS needed. -->
-    <uses-permission android:name="android.permission.READ_SMS"/>
-    <uses-permission android:name="android.permission.RECEIVE_SMS"/>
+    <!-- Threadly never reads the message store and never sends: conversations
+         come from Google Messages' notifications (the listener service below)
+         and all sending is an sms: handoff to Google Messages. Hence no SMS
+         permissions and no network access at all. -->
     <!-- Read contact names to show over phone numbers (read-only). -->
     <uses-permission android:name="android.permission.READ_CONTACTS"/>
-    <!-- Network access for the gmessages bridge reader. Flutter only adds this
-         automatically in debug builds, so it must be declared for release. -->
-    <uses-permission android:name="android.permission.INTERNET"/>
     <!-- Reminder notifications the user sets on a conversation (the only
          notifications Threadly posts). POST_NOTIFICATIONS is the Android 13+
          runtime permission; SCHEDULE_EXACT_ALARM lets a reminder fire on time
@@ -25,7 +22,6 @@
         android:label="Threadly"
         android:name="${applicationName}"
         android:icon="@mipmap/ic_launcher"
-        android:usesCleartextTraffic="true"
         android:allowBackup="true"
         android:fullBackupContent="@xml/backup_rules"
         android:dataExtractionRules="@xml/data_extraction_rules">

@@ -1,8 +1,8 @@
 /// User-defined, app-managed bucket of people (e.g. "LDS").
 ///
-/// A category classifies conversations — both individual chats and group chats.
-/// Distinct from an SMS group chat: a category lives only in this app's local
-/// store and collects people by phone number.
+/// A category classifies conversations — both individual chats and group chats
+/// — and drives the home screen's tabs. It lives only in this app's local
+/// store; members are conversation ids.
 class Category {
   final int id;
   final String name;
@@ -13,30 +13,15 @@ class Category {
   const Category({required this.id, required this.name, required this.color});
 }
 
-/// A named, saved roster of people under a [Category] — e.g. "U17 Parents
-/// Carpool". Launchable as a group text in the native Messages app.
-class GroupChat {
-  final int id;
-  final int categoryId;
-  final String name;
-  final List<String> members; // normalized phones
-
-  const GroupChat({
-    required this.id,
-    required this.categoryId,
-    required this.name,
-    required this.members,
-  });
-}
-
-/// Per-conversation annotation: an ad-hoc color, a free-text note, and/or a
-/// reminder.
+/// Per-conversation annotation: a nickname, an ad-hoc color, a free-text note,
+/// and/or a reminder.
 ///
-/// Independent of categories. Keyed by [MessageThread.participantKey].
+/// Independent of categories. Keyed by the conversation id ([threadKey] is the
+/// historical column name).
 class ConversationAnnotation {
   final String threadKey;
 
-  /// Custom display name shown instead of the phone number(s), or null.
+  /// Custom nickname shown as a subtitle under the title, or null.
   final String? name;
 
   /// ARGB color, or null for none.

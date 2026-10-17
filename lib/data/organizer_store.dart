@@ -4,8 +4,10 @@ import 'package:sqflite/sqflite.dart';
 import '../models/category.dart';
 
 /// Local persistence for the app-managed organizing layer:
-///  - categories (buckets of people) + their members (phone numbers)
-///  - per-conversation annotations (color + note)
+///  - categories + their members (conversation ids; the column is still named
+///    `phone` from the SMS era)
+///  - per-conversation annotations (nickname, color, note, reminder), reads,
+///    pending groups, and created groups' rosters — all keyed by conversation id
 ///
 /// NOTE: the SQLite tables are still named `groupings` / `grouping_members`
 /// (and the `grouping_id` column) for backward compatibility with existing
@@ -68,7 +70,9 @@ class OrganizerStore {
     );
   }
 
-  /// Saved group-chat rosters under a category (added in schema v2).
+  /// Saved group-chat rosters under a category (added in schema v2). Dormant:
+  /// only the retired legacy editors used them. Kept so the schema and its
+  /// migrations stay unchanged for existing installs.
   Future<void> _createGroupChatTables(Database db) async {
     await db.execute('''
       CREATE TABLE group_chats(
@@ -173,7 +177,7 @@ class OrganizerStore {
     final db = await _database;
     await db
         .delete('grouping_members', where: 'grouping_id = ?', whereArgs: [id]);
-    // Remove the category's group-chat rosters and their members too.
+    // Also clear any (dormant, legacy) group-chat rosters under it.
     final chats =
         await db.query('group_chats', columns: ['id'], where: 'category_id = ?', whereArgs: [id]);
     for (final r in chats) {
@@ -184,7 +188,7 @@ class OrganizerStore {
     await db.delete('groupings', where: 'id = ?', whereArgs: [id]);
   }
 
-  /// category id -> set of member phone numbers (normalized).
+  /// category id -> set of member conversation ids.
   Future<Map<int, Set<String>>> allMemberships() async {
     final db = await _database;
     final rows = await db.query('grouping_members');
@@ -208,65 +212,6 @@ class OrganizerStore {
         'grouping_members',
         where: 'grouping_id = ? AND phone = ?',
         whereArgs: [categoryId, phone],
-      );
-    }
-  }
-
-  // --- Group chats (saved rosters) --------------------------------------
-
-  Future<List<GroupChat>> groupChats(int categoryId) async {
-    final db = await _database;
-    final rows = await db.query('group_chats',
-        where: 'category_id = ?',
-        whereArgs: [categoryId],
-        orderBy: 'name COLLATE NOCASE');
-    final out = <GroupChat>[];
-    for (final r in rows) {
-      final id = r['id'] as int;
-      final memberRows = await db.query('group_chat_members',
-          columns: ['phone'], where: 'group_chat_id = ?', whereArgs: [id]);
-      out.add(GroupChat(
-        id: id,
-        categoryId: categoryId,
-        name: r['name'] as String,
-        members: [for (final m in memberRows) m['phone'] as String],
-      ));
-    }
-    return out;
-  }
-
-  Future<int> createGroupChat(
-      int categoryId, String name, List<String> phones) async {
-    final db = await _database;
-    final id = await db
-        .insert('group_chats', {'category_id': categoryId, 'name': name.trim()});
-    await _setGroupChatMembers(db, id, phones);
-    return id;
-  }
-
-  Future<void> updateGroupChat(int id, String name, List<String> phones) async {
-    final db = await _database;
-    await db.update('group_chats', {'name': name.trim()},
-        where: 'id = ?', whereArgs: [id]);
-    await db
-        .delete('group_chat_members', where: 'group_chat_id = ?', whereArgs: [id]);
-    await _setGroupChatMembers(db, id, phones);
-  }
-
-  Future<void> deleteGroupChat(int id) async {
-    final db = await _database;
-    await db
-        .delete('group_chat_members', where: 'group_chat_id = ?', whereArgs: [id]);
-    await db.delete('group_chats', where: 'id = ?', whereArgs: [id]);
-  }
-
-  Future<void> _setGroupChatMembers(
-      Database db, int chatId, List<String> phones) async {
-    for (final p in phones) {
-      await db.insert(
-        'group_chat_members',
-        {'group_chat_id': chatId, 'phone': p},
-        conflictAlgorithm: ConflictAlgorithm.ignore,
       );
     }
   }

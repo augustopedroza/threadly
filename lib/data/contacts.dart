@@ -2,7 +2,7 @@ import 'dart:typed_data';
 
 import 'package:flutter_contacts/flutter_contacts.dart';
 
-import '../models/thread.dart';
+import '../models/phone.dart';
 
 /// An immutable read snapshot mapping phone numbers to saved contact names, so
 /// the UI can show "Olivia Bennett" instead of a raw number. Built by
@@ -17,14 +17,13 @@ class ContactsSnapshot {
   /// normalized phone -> contact photo thumbnail bytes (when the contact has one).
   final Map<String, Uint8List> _phoneToPhoto;
 
-  /// lowercased contact display name -> photo thumbnail. Used to resolve an
-  /// avatar for bridge conversations, where participants are name-only ghosts
-  /// with no phone number to key on.
+  /// lowercased contact display name -> photo thumbnail. Conversation titles
+  /// from Google Messages' notifications are contact names, not numbers, so
+  /// avatars resolve by name.
   final Map<String, Uint8List> _nameToPhoto;
 
-  /// lowercased contact display name -> a dialable phone number. Used to recover
-  /// a sendable number for bridge conversations (their participants are name-only
-  /// ghosts with no number), so the native handoff opens the right thread.
+  /// lowercased contact display name -> a dialable phone number, to recover a
+  /// 1:1's number from its (name) title for the `sms:` handoff fallback.
   final Map<String, String> _nameToPhone;
 
   /// All contacts as pickable people (normalized phone + display name), for the
@@ -53,21 +52,6 @@ class ContactsSnapshot {
   Uint8List? photoForPhone(String phone) =>
       _phoneToPhoto[normalizePhone(phone)];
 
-  /// The avatar photo to show for a conversation: the contact's photo for a 1:1
-  /// thread, or null for group threads (no single photo) or unknown contacts.
-  ///
-  /// Tries the participant's phone number first (the SMS source supplies real
-  /// numbers), then falls back to matching the resolved display name (the
-  /// bridge supplies contact names, not numbers).
-  Uint8List? photoForThread(MessageThread thread) {
-    if (thread.isGroup) return null;
-    if (thread.participants.isNotEmpty) {
-      final byPhone = photoForPhone(thread.participants.first);
-      if (byPhone != null) return byPhone;
-    }
-    return _nameToPhoto[titleFor(thread).toLowerCase().trim()];
-  }
-
   /// A dialable phone number for a saved contact [name], or null.
   String? phoneForName(String name) => _nameToPhone[name.toLowerCase().trim()];
 
@@ -77,43 +61,6 @@ class ContactsSnapshot {
     final byName = _nameToPhoto[title.toLowerCase().trim()];
     if (byName != null) return byName;
     return photoForPhone(title);
-  }
-
-  /// Resolve a thread's participants to phone numbers usable for the native
-  /// `sms:` handoff. Bridge participants are name-only ghosts (`gm:…`) with no
-  /// number; for a 1:1 we recover it from the contact name. Returns null if any
-  /// participant can't be resolved — the caller should warn rather than open
-  /// Messages on the wrong (or a bogus `gm:`) thread.
-  List<String>? sendRecipients(MessageThread thread) {
-    final out = <String>[];
-    for (final p in thread.participants) {
-      if (!p.startsWith('gm:')) {
-        out.add(p);
-      } else if (thread.participants.length == 1) {
-        final number = phoneForName(titleFor(thread));
-        if (number == null) return null;
-        out.add(number);
-      } else {
-        return null; // a group ghost with no resolvable number
-      }
-    }
-    return out.isEmpty ? null : out;
-  }
-
-  /// Number of contact photos loaded (diagnostics).
-  int get photoCount => _phoneToPhoto.length + _nameToPhoto.length;
-
-  /// A display title for [thread]: each participant shown as their contact name
-  /// where known, otherwise the raw number. Falls back to the thread's own
-  /// title (e.g. "Unknown") when there are no participants.
-  String titleFor(MessageThread thread) {
-    // A source-provided title (e.g. a bridge room name) wins over participant
-    // resolution — the bridge already knows contact names we may not have.
-    if (thread.sourceTitle != null && thread.sourceTitle!.isNotEmpty) {
-      return thread.sourceTitle!;
-    }
-    if (thread.participants.isEmpty) return thread.title;
-    return thread.participants.map((p) => nameForPhone(p) ?? p).join(', ');
   }
 }
 
