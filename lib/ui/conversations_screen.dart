@@ -648,10 +648,15 @@ class _ConversationsScreenState extends State<ConversationsScreen>
 
   Future<void> _open(Conversation c) async {
     await _markRead(c);
-    // 1) Deep-link by number(s) — the reliable path: the contact's number for a
-    //    1:1, or the saved/harvested member numbers for a group. (The
-    //    notification contentIntent is a trampoline that Android 12+ blocks for
-    //    other apps, so it can't be trusted as the primary route.)
+    // 1) Open the exact thread by Google Messages' own conversation id (works
+    //    for every kind, incoming RCS groups included, notification or not).
+    //    It relies on undocumented GM extras, hence the fallbacks below.
+    if (await _notifs.launch(c.id)) {
+      _queueMappingPrompt(c);
+      return;
+    }
+    // 2) Deep-link by number(s): the contact's number for a 1:1, or the saved
+    //    roster of a group created here.
     List<String>? recipients;
     if (c.isGroup) {
       // Only deep-link a group when we have its *complete* roster (2+). A
@@ -669,10 +674,7 @@ class _ConversationsScreenState extends State<ConversationsScreen>
       _queueMappingPrompt(c);
       return;
     }
-    // 2) No number known (e.g. an incoming group we couldn't harvest numbers
-    //    for): open Google Messages. We deliberately don't use the notification
-    //    contentIntent — it's a trampoline Android 12+ blocks for other apps, so
-    //    it silently does nothing and would swallow the tap.
+    // 3) Last resort: the Google Messages inbox.
     if (await _notifs.openMessagesApp()) {
       _queueMappingPrompt(c);
       return;

@@ -34,14 +34,19 @@ Consequences baked into the design:
 - The conversation list is **incremental** — a conversation appears only after Google Messages posts
   a notification for it (i.e. an *incoming* message while GM is **not** foregrounded). Send-only or
   foreground/muted conversations are invisible.
-- Notifications expose the group **name and flag** but **not the membership**, and the exact-thread
-  `contentIntent` is a **notification trampoline Android 12+ blocks** for third-party apps. So an
-  incoming group can be detected and named but **can't be deep-linked**; tapping it opens the GM
-  inbox. Only groups **created in Threadly** (whose full roster we captured) deep-link to the thread.
-  **A hand-attached roster does not fix this** (tried 2026-07, reverted): an `sms:` recipient link
-  resolves to the *SMS/MMS* thread for those members, so for an incoming **RCS** group it opens a
-  *different* conversation with the same people. Created groups deep-link only because they were
-  born from that same `sms:` link (they *are* the MMS thread).
+- Notifications expose the group **name and flag** but **not the membership**. Deep-linking any
+  conversation (incoming RCS groups included) works via **Google Messages' own conversation id**:
+  the notification's `shortcutId` (also the trailing number of its tag, which is Threadly's
+  conversation id). GM registers a sharing shortcut per conversation whose intent is a plain
+  LAUNCHER intent to `.ui.ConversationListActivity` with extras `conversation_id="<id>"` (**must be
+  a String** — an int lands in the inbox), `mapi_conversation_kind=1`, `via_shortcut=true`
+  (recipe from `adb shell dumpsys shortcut`, verified 2026-10-16). Threadly builds that intent
+  itself in `launch(id)`; nothing expires with the notification. It relies on undocumented GM
+  extras, so the `sms:` and inbox fallbacks stay. Dead ends, don't retry: the notification's
+  `contentIntent` (a PendingIntent that goes away with the notification), and a hand-attached
+  roster via `sms:` (tried 2026-07, reverted — an `sms:` recipient link resolves to the *SMS/MMS*
+  thread for those members, so for an incoming **RCS** group it opens a *different* conversation).
+  Groups created in Threadly also deep-link via `sms:` only because they *are* the MMS thread.
 
 **iOS is not viable** for the parts that matter: iOS forbids reading other apps' notifications or the
 Messages store, so unread state, recency, and the auto-built list are impossible. iOS could only be a
@@ -83,11 +88,12 @@ on accountless devices) and only duplicated what categories already do better. C
 Mainline (notification-driven) pieces:
 
 - `android/.../ConversationNotificationListener.kt` — the `NotificationListenerService`. Watches
-  Google Messages notifications and persists, per conversation, `{title, ts, group, preview}` plus an
-  active (= unread) set in SharedPreferences. `preview` is the last *incoming* message's text, read
-  from the notification (`android.messages` newest entry, else `EXTRA_TEXT`); a collapsed "N new
-  messages" summary keeps the prior preview. Holds each active notification's `contentIntent` for
-  exact-thread launch (when present). Detects a group via GM's group flag / conversation title /
+  Google Messages notifications and persists, per conversation, `{title, ts, group, preview, gmId}`
+  plus an active (= unread) set in SharedPreferences. `preview` is the last *incoming* message's
+  text, read from the notification (`android.messages` newest entry, else `EXTRA_TEXT`); a collapsed
+  "N new messages" summary keeps the prior preview. `gmId` is GM's conversation id (the
+  `shortcutId`, else parsed from the tag) that `launch(id)` turns into an exact-thread intent — see
+  the constraint section. Detects a group via GM's group flag / conversation title /
   multiple distinct senders. Exposes `conversationsJson`, `launch(id)`, `forget(id)`,
   `openMessagesApp` over a `MethodChannel("threadly/notifications")` (wired in `MainActivity.kt`).
 - `lib/data/notifications.dart` — `NotificationConversationsService` (channel wrapper) +
@@ -98,8 +104,9 @@ Mainline (notification-driven) pieces:
   nickname/note/category; tabs (All + categories); search (name/nickname/note/category — *not* the
   preview); tap → handoff; long-press → organize; swipe → forget. Filters out short-code/automated
   senders via `_isAutomatedSender` (keeps groups, 10+ digit numbers, saved contacts). Hosts the New
-  Group flow and the inline `_OrganizeSheet`. Tapping resolves the open target: 1:1 → `sms:` to the
-  contact number; created group → `sms:` to its saved roster (2+); else open GM inbox. After a
+  Group flow and the inline `_OrganizeSheet`. Tapping resolves the open target: exact thread via
+  `launch(id)` (GM conversation id, any kind); else 1:1 → `sms:` to the contact number / created
+  group → `sms:` to its saved roster (2+); else open GM inbox. After a
   handoff to a raw-number 1:1 (no contact, no nickname), returning to Threadly shows a **mapping
   prompt** (`_queueMappingPrompt` → resume) offering the organize sheet; "don't ask" declines are
   in-memory (per session). Groups deliberately get no such prompt — see the constraint note below.

@@ -78,8 +78,9 @@ class NotificationConversationsService {
     ];
   }
 
-  /// Open the *exact* [id] thread via the live notification's contentIntent.
-  /// Returns false if there's no active notification (caller should fall back).
+  /// Open the *exact* [id] thread in Google Messages by its own conversation id
+  /// (captured from its notification; works after dismissal and for incoming
+  /// groups). Returns false if the id is unknown (caller should fall back).
   Future<bool> launch(String id) async {
     try {
       return await _ch.invokeMethod<bool>('launch', {'id': id}) ?? false;

@@ -1,7 +1,6 @@
 package com.augusto.group_chat
 
 import android.app.Notification
-import android.app.PendingIntent
 import android.content.Context
 import android.os.Bundle
 import android.service.notification.NotificationListenerService
@@ -18,16 +17,16 @@ import org.json.JSONObject
  * observes them.
  *
  * It persists a small record per conversation in SharedPreferences (title +
- * last-activity timestamp + group flag) so the list survives dismissals and
- * restarts, and tracks which conversations currently have an active (= unread)
- * notification. It also holds each active notification's contentIntent so the UI
- * can reopen that exact thread in Google Messages while it's still showing.
+ * last-activity timestamp + group flag + Google Messages' own conversation id)
+ * so the list survives dismissals and restarts, and tracks which conversations
+ * currently have an active (= unread) notification. The GM conversation id is
+ * what lets [launch] open the exact thread later — see there.
  */
 class ConversationNotificationListener : NotificationListenerService() {
 
     override fun onListenerConnected() {
         // Seed unread state from whatever is already showing.
-        activeIntents.clear()
+        activeIds.clear()
         try {
             activeNotifications?.forEach { record(it) }
         } catch (_: SecurityException) {
@@ -47,7 +46,7 @@ class ConversationNotificationListener : NotificationListenerService() {
         if (sbn.packageName != MESSAGES_PKG) return
         val id = conversationId(sbn) ?: return
         // Removal in Google Messages means the user has seen it: now read.
-        activeIntents.remove(id)
+        activeIds.remove(id)
         persistActive(this)
     }
 
@@ -70,10 +69,18 @@ class ConversationNotificationListener : NotificationListenerService() {
             return
         }
 
-        n.contentIntent?.let { activeIntents[id] = it }
+        activeIds.add(id)
 
         val store = prefs(this)
         val convos = JSONObject(store.getString(KEY_CONVOS, "{}") ?: "{}")
+        // Google Messages' own conversation id, needed by [launch]. It's the
+        // notification's shortcutId (GM registers one sharing shortcut per
+        // conversation, keyed by that id); the tag ends in the same number.
+        var gmId = (if (android.os.Build.VERSION.SDK_INT >= 26) n.shortcutId else null)
+            ?: gmIdFromTag(id).orEmpty()
+        if (gmId.isEmpty()) {
+            gmId = convos.optJSONObject(id)?.optString("gmId").orEmpty()
+        }
         // The last-message preview. This is the only message *content* Threadly
         // keeps, and it comes straight from the notification (so it works for RCS
         // too — no message store is read). If this notification carries no text
@@ -87,6 +94,7 @@ class ConversationNotificationListener : NotificationListenerService() {
             .put("ts", sbn.postTime)
             .put("group", isGroup)
             .put("preview", preview)
+            .put("gmId", gmId)
         convos.put(id, entry)
         store.edit().putString(KEY_CONVOS, convos.toString()).apply()
     }
@@ -159,8 +167,14 @@ class ConversationNotificationListener : NotificationListenerService() {
         private const val KEY_CONVOS = "conversations"
         private const val KEY_ACTIVE = "active"
 
-        /** id -> contentIntent for currently-active notifications. */
-        private val activeIntents = HashMap<String, PendingIntent>()
+        /** Ids of conversations with a currently-active (= unread) notification. */
+        private val activeIds = HashSet<String>()
+
+        /** GM's conversation-list activity; its LAUNCHER intent takes a
+         *  `conversation_id` extra that opens that thread (how GM's own
+         *  per-conversation shortcuts work). */
+        private const val MESSAGES_LIST_ACTIVITY =
+            "com.google.android.apps.messaging.ui.ConversationListActivity"
 
         private fun prefs(ctx: Context) =
             ctx.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
@@ -169,15 +183,19 @@ class ConversationNotificationListener : NotificationListenerService() {
         private fun conversationId(sbn: StatusBarNotification): String? =
             sbn.tag ?: sbn.key
 
+        /** GM tags look like `<pkg>:incoming_message:<conversation id>`. */
+        private fun gmIdFromTag(id: String): String? =
+            Regex(""":(\d+)$""").find(id)?.groupValues?.get(1)
+
         private fun persistActive(ctx: Context) {
             prefs(ctx).edit()
-                .putStringSet(KEY_ACTIVE, HashSet(activeIntents.keys))
+                .putStringSet(KEY_ACTIVE, HashSet(activeIds))
                 .apply()
         }
 
         /**
          * The conversation list for Flutter: a JSON array of
-         * {id, title, ts, group, unread}, newest activity first.
+         * {id, title, ts, group, preview, unread}, newest activity first.
          */
         fun conversationsJson(ctx: Context): String {
             val store = prefs(ctx)
@@ -203,17 +221,40 @@ class ConversationNotificationListener : NotificationListenerService() {
         }
 
         /**
-         * Open the *exact* conversation thread via the live notification's
-         * contentIntent. Returns true only if that intent was sent. If there's no
-         * active notification, returns false so the caller can fall back (sms:
-         * deep link, then [openMessagesApp]).
+         * Open the *exact* conversation thread in Google Messages — any kind,
+         * incoming RCS groups included, whether or not its notification is still
+         * showing.
+         *
+         * This replays what GM's own per-conversation sharing shortcut does: a
+         * plain LAUNCHER intent to its conversation-list activity carrying the
+         * conversation id (`dumpsys shortcut` shows the recipe). It's a
+         * constructed intent, not a PendingIntent, so nothing expires; the only
+         * thing we need is the id, captured from the notification. Relies on
+         * undocumented GM extras (`conversation_id` must be a *String* — an int
+         * lands in the inbox), so callers keep the `sms:` / inbox fallbacks.
+         * Returns false if the id is unknown or the activity is gone.
          */
         fun launch(ctx: Context, id: String): Boolean {
-            val pi = activeIntents[id] ?: return false
+            val convos = JSONObject(prefs(ctx).getString(KEY_CONVOS, "{}") ?: "{}")
+            // Entries recorded before gmId was stored still carry it in the tag.
+            val gmId = convos.optJSONObject(id)?.optString("gmId")
+                ?.ifEmpty { null } ?: gmIdFromTag(id) ?: return false
+            val intent = android.content.Intent(android.content.Intent.ACTION_MAIN)
+                .addCategory(android.content.Intent.CATEGORY_LAUNCHER)
+                .setClassName(MESSAGES_PKG, MESSAGES_LIST_ACTIVITY)
+                .putExtra("conversation_id", gmId)
+                .putExtra("mapi_conversation_kind", 1)
+                .putExtra("via_shortcut", true)
+                // CLEAR_TASK matters: if GM's inbox is already alive the intent
+                // is otherwise delivered via onNewIntent, which ignores the id.
+                .addFlags(
+                    android.content.Intent.FLAG_ACTIVITY_NEW_TASK or
+                        android.content.Intent.FLAG_ACTIVITY_CLEAR_TASK
+                )
             return try {
-                pi.send()
+                ctx.startActivity(intent)
                 true
-            } catch (_: PendingIntent.CanceledException) {
+            } catch (_: android.content.ActivityNotFoundException) {
                 false
             }
         }
@@ -226,10 +267,10 @@ class ConversationNotificationListener : NotificationListenerService() {
             val store = prefs(ctx)
             val convos = JSONObject(store.getString(KEY_CONVOS, "{}") ?: "{}")
             convos.remove(id)
-            activeIntents.remove(id)
+            activeIds.remove(id)
             store.edit()
                 .putString(KEY_CONVOS, convos.toString())
-                .putStringSet(KEY_ACTIVE, HashSet(activeIntents.keys))
+                .putStringSet(KEY_ACTIVE, HashSet(activeIds))
                 .apply()
         }
 
