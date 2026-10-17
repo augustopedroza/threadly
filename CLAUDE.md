@@ -106,7 +106,11 @@ Mainline (notification-driven) pieces:
   senders via `_isAutomatedSender` (keeps groups, 10+ digit numbers, saved contacts). Hosts the New
   Group flow and the inline `_OrganizeSheet`. Tapping resolves the open target: exact thread via
   `launch(id)` (GM conversation id, any kind); else 1:1 → `sms:` to the contact number / created
-  group → `sms:` to its saved roster (2+); else open GM inbox. After a
+  group → `sms:` to its saved roster (2+); else open GM inbox. Returning from any handoff (chip or
+  Back) refreshes the list **in place** (spinner only on first load, so scroll/tab survive) and
+  **blinks** the conversation you came from (`_Blink`: scrolls it into view only if off screen,
+  two primary-color pulses; a row not yet built — far off screen after a reorder — isn't
+  reached). Any prompt waits for the blink. After a
   handoff to a raw-number 1:1 (no contact, no nickname), returning to Threadly shows a **mapping
   prompt** (`_queueMappingPrompt` → resume) offering the organize sheet; "don't ask" declines are
   in-memory (per session). Groups deliberately get no such prompt — see the constraint note below.
@@ -136,9 +140,7 @@ Mainline (notification-driven) pieces:
   — the optional **"back to Threadly" chip**: a draggable `TYPE_APPLICATION_OVERLAY` pill drawn over
   Google Messages after every handoff (`_handedOff` in the home screen, and `openSmsCompose`). Exists
   because Back can't return: GM's conversation screen runs in GM's own task (`singleTask`), so Back
-  goes GM inbox → Threadly. Tap → Threadly with the handed-off conversation's organize sheet open
-  (a read-once `consumeTapped` flag tells a chip return from Back; Back shows the plain list, plus
-  the nickname offer when due); hidden on `MainActivity.onResume`, screen off, or after
+  goes GM inbox → Threadly. Tap → Threadly as you left it; hidden on `MainActivity.onResume`, screen off, or after
   20 min; drag position remembered. Needs the user-granted `SYSTEM_ALERT_WINDOW` ("Display over other
   apps"); its Settings page is always the full app list since Android 11 (the per-app page is
   system-only). Offered once by a sheet on the first return from Messages (unless the nickname

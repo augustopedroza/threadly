@@ -47,12 +47,6 @@ object ReturnChip {
 
     private var chip: View? = null
     private var screenOff: BroadcastReceiver? = null
-
-    /** Set when the user returned by tapping the chip (vs Back/launcher), so
-     *  Threadly can open the conversation they came from. Read-once. */
-    private var tapped = false
-
-    fun consumeTapped(): Boolean = tapped.also { tapped = false }
     private val handler = Handler(Looper.getMainLooper())
     private val autoHide = Runnable { hide() }
 
@@ -94,7 +88,6 @@ object ReturnChip {
     /** Draw the chip (or re-arm its auto-hide if already up). */
     fun show(ctx: Context): Boolean {
         val app = ctx.applicationContext
-        tapped = false // a new handoff: any earlier tap is stale
         if (!granted(app) || !enabled(app)) return false
         if (chip != null) {
             handler.removeCallbacks(autoHide)
@@ -168,7 +161,6 @@ object ReturnChip {
     /** Bring Threadly to the front, exactly as the launcher would. */
     private fun open(app: Context) {
         hide()
-        tapped = true
         val intent = app.packageManager.getLaunchIntentForPackage(app.packageName)
             ?: return
         app.startActivity(intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK))

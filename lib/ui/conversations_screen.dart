@@ -37,9 +37,14 @@ class _ConversationsScreenState extends State<ConversationsScreen>
   ReturnChipStatus? _chipStatus;
 
   /// The conversation last handed off to Messages, until the user returns:
-  /// the moment to offer the return chip once (if it isn't set up yet), and
-  /// what a chip tap brings back up.
+  /// its row blinks on the way back (chip or Back), and that's the moment to
+  /// offer the return chip once (if it isn't set up yet).
   Conversation? _lastHandoff;
+
+  /// The row currently blinking (see [_blink]) and a counter that restarts
+  /// the pulse when the same row blinks again.
+  String? _blinkId;
+  int _blinkSeq = 0;
 
   bool _loading = true;
   bool _loadedOnce = false;
@@ -129,22 +134,32 @@ class _ConversationsScreenState extends State<ConversationsScreen>
       // Also re-reads the chip status: the user may have just granted the
       // overlay permission in Settings.
       await _refreshChipStatus();
-      final viaChip = await _chip.consumeTapped();
+      if (!mounted || fromHandoff == null) return;
+      // Back from Messages (chip or Back alike): show where they were. Any
+      // prompt waits for the blink so it doesn't cover it.
+      _blink(fromHandoff.id);
+      final chip = _chipStatus;
+      final offerChip = chip != null && !chip.active && !chip.nudged;
+      if (pending == null && !offerChip) return;
+      await Future<void>.delayed(_Blink.duration);
       if (!mounted) return;
-      if (viaChip && fromHandoff != null) {
-        // Back via the chip: straight to organizing what they just read
-        // (this also covers the nickname offer). Fresh copy if it's listed.
-        final fresh = _conversations
-            .where((c) => c.id == fromHandoff.id)
-            .firstOrNull;
-        _organize(fresh ?? fromHandoff);
-      } else if (pending != null) {
+      if (pending != null) {
         _offerNickname(pending);
-      } else if (fromHandoff != null) {
+      } else {
         // One prompt per return: the nickname offer wins; the chip offer
         // waits for a later trip.
         _maybeOfferReturnChip();
       }
+    });
+  }
+
+  /// Pulse [id]'s row (see [_Blink]); the trigger clears once it's done so a
+  /// row built later (another tab, scrolled in) doesn't blink late.
+  void _blink(String id) {
+    final seq = ++_blinkSeq;
+    setState(() => _blinkId = id);
+    Future<void>.delayed(_Blink.duration, () {
+      if (mounted && _blinkSeq == seq) setState(() => _blinkId = null);
     });
   }
 
@@ -186,8 +201,8 @@ class _ConversationsScreenState extends State<ConversationsScreen>
               const Text(
                 'Back in Messages goes to its inbox first. Threadly can show a '
                 'small floating “Threadly” button over Messages after you open '
-                'a conversation: one tap brings you back, ready to organize '
-                'that conversation. It disappears when you return.\n\n'
+                'a conversation: one tap brings you back to where you were. '
+                'It disappears when you return.\n\n'
                 'Android calls this “Display over other apps”: in the list '
                 'that opens, find Threadly and switch it on, then come back. '
                 'You can turn the button off anytime from the ⋮ menu.',
@@ -619,7 +634,9 @@ class _ConversationsScreenState extends State<ConversationsScreen>
           ),
         ),
     ];
-    return Dismissible(
+    return _Blink(
+      trigger: c.id == _blinkId ? _blinkSeq : 0,
+      child: Dismissible(
       key: ValueKey('conv-${c.id}'),
       direction: DismissDirection.endToStart,
       background: Container(
@@ -687,6 +704,7 @@ class _ConversationsScreenState extends State<ConversationsScreen>
           : null,
         onTap: () => _open(c),
         onLongPress: () => _organize(c),
+      ),
       ),
     );
   }
@@ -1048,6 +1066,84 @@ class _ConversationsScreenState extends State<ConversationsScreen>
     // Toggles/notes persist live; reload to reflect them (also covers dismiss
     // without an explicit Save).
     if (mounted) _load();
+  }
+}
+
+/// "You came from here": on return from Messages, scrolls the row into view
+/// (only if it isn't already, so the list otherwise keeps its place) and
+/// pulses it twice with the theme's primary color.
+class _Blink extends StatefulWidget {
+  const _Blink({required this.trigger, required this.child});
+
+  static const duration = Duration(milliseconds: 1100);
+
+  /// Non-zero starts the pulse; a new non-zero value restarts it.
+  final int trigger;
+  final Widget child;
+
+  @override
+  State<_Blink> createState() => _BlinkState();
+}
+
+class _BlinkState extends State<_Blink> with SingleTickerProviderStateMixin {
+  late final AnimationController _controller =
+      AnimationController(vsync: this, duration: _Blink.duration);
+
+  static final _pulses = TweenSequence<double>([
+    TweenSequenceItem(tween: Tween(begin: 0, end: 1), weight: 1),
+    TweenSequenceItem(tween: Tween(begin: 1, end: 0), weight: 1),
+    TweenSequenceItem(tween: Tween(begin: 0, end: 1), weight: 1),
+    TweenSequenceItem(tween: Tween(begin: 1, end: 0), weight: 2),
+  ]);
+
+  @override
+  void initState() {
+    super.initState();
+    if (widget.trigger != 0) _start();
+  }
+
+  @override
+  void didUpdateWidget(_Blink old) {
+    super.didUpdateWidget(old);
+    if (widget.trigger != 0 && widget.trigger != old.trigger) _start();
+  }
+
+  void _start() {
+    WidgetsBinding.instance.addPostFrameCallback((_) async {
+      // Reveal it if it's off screen: each policy only scrolls one way, and
+      // is a no-op when the row is already fully visible.
+      for (final policy in [
+        ScrollPositionAlignmentPolicy.keepVisibleAtEnd,
+        ScrollPositionAlignmentPolicy.keepVisibleAtStart,
+      ]) {
+        if (!mounted) return;
+        await Scrollable.ensureVisible(
+          context,
+          alignmentPolicy: policy,
+          duration: const Duration(milliseconds: 250),
+        );
+      }
+      if (mounted) _controller.forward(from: 0);
+    });
+  }
+
+  @override
+  void dispose() {
+    _controller.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final color = Theme.of(context).colorScheme.primary;
+    return AnimatedBuilder(
+      animation: _controller,
+      builder: (context, child) => ColoredBox(
+        color: color.withValues(alpha: 0.22 * _pulses.evaluate(_controller)),
+        child: child,
+      ),
+      child: widget.child,
+    );
   }
 }
 

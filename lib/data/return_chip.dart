@@ -51,16 +51,6 @@ class ReturnChipService {
     }
   }
 
-  /// Whether the user just came back by tapping the chip (as opposed to Back
-  /// or the launcher). Read-once: the flag clears.
-  Future<bool> consumeTapped() async {
-    try {
-      return await _ch.invokeMethod<bool>('consumeTapped') ?? false;
-    } on PlatformException {
-      return false;
-    }
-  }
-
   /// Draw the chip now (after a handoff). False when not granted or disabled.
   Future<bool> show() async {
     try {
