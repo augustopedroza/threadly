@@ -132,6 +132,18 @@ Mainline (notification-driven) pieces:
   cancelled on swipe-forget. Requires core-library desugaring (see `android/app/build.gradle.kts`).
 - `lib/messaging.dart` — the handoff: `openSmsCompose(recipients, {body})`; `launchGroupText(context,
   recipients)` warns if `recipients.length > kGroupTextWarnLimit` (20).
+- `android/.../ReturnChip.kt` + `lib/data/return_chip.dart` (`MethodChannel("threadly/return_chip")`)
+  — the optional **"back to Threadly" chip**: a draggable `TYPE_APPLICATION_OVERLAY` pill drawn over
+  Google Messages after every handoff (`_handedOff` in the home screen, and `openSmsCompose`). Exists
+  because Back can't return: GM's conversation screen runs in GM's own task (`singleTask`), so Back
+  goes GM inbox → Threadly. Tap → Threadly with the handed-off conversation's organize sheet open
+  (a read-once `consumeTapped` flag tells a chip return from Back; Back shows the plain list, plus
+  the nickname offer when due); hidden on `MainActivity.onResume`, screen off, or after
+  20 min; drag position remembered. Needs the user-granted `SYSTEM_ALERT_WINDOW` ("Display over other
+  apps"); its Settings page is always the full app list since Android 11 (the per-app page is
+  system-only). Offered once by a sheet on the first return from Messages (unless the nickname
+  prompt is showing that time); toggled from the home screen's ⋮ menu. Preference + nudged flag in
+  SharedPreferences, not SQLite.
 - `lib/models/category.dart` / `models/thread.dart` — `Category` / `GroupChat` /
   `ConversationAnnotation` / `Person`, and `normalizePhone(raw)` (digits-only, last 10).
 
@@ -153,7 +165,8 @@ branch for any schema change** — existing installs carry real user data.
 
 `android/app/src/main/AndroidManifest.xml`: the `ConversationNotificationListener` service
 (`BIND_NOTIFICATION_LISTENER_SERVICE`), permissions (`READ_CONTACTS`; `POST_NOTIFICATIONS`/
-`SCHEDULE_EXACT_ALARM`/`RECEIVE_BOOT_COMPLETED` for reminders; `READ_SMS`/`RECEIVE_SMS`/
+`SCHEDULE_EXACT_ALARM`/`RECEIVE_BOOT_COMPLETED` for reminders; `SYSTEM_ALERT_WINDOW` for the
+return chip; `READ_SMS`/`RECEIVE_SMS`/
 `INTERNET` linger from the legacy paths — **no SEND_SMS, no WRITE_CONTACTS**), the
 `flutter_local_notifications` receivers (scheduled delivery + reboot restore), and `<queries>` for
 the `sms:` scheme + the Google Messages package. The `applicationId` is still

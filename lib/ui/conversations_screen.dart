@@ -4,6 +4,7 @@ import '../data/contacts.dart';
 import '../data/notifications.dart';
 import '../data/organizer_store.dart';
 import '../data/reminders.dart';
+import '../data/return_chip.dart';
 import '../format.dart';
 import '../messaging.dart';
 import '../models/category.dart';
@@ -30,6 +31,15 @@ class _ConversationsScreenState extends State<ConversationsScreen>
   final OrganizerStore _store = OrganizerStore();
   final ContactsService _contactsService = ContactsService();
   final ReminderService _reminders = ReminderService();
+  final ReturnChipService _chip = ReturnChipService();
+
+  /// Whether the "back to Threadly" chip is set up (permission + preference).
+  ReturnChipStatus? _chipStatus;
+
+  /// The conversation last handed off to Messages, until the user returns:
+  /// the moment to offer the return chip once (if it isn't set up yet), and
+  /// what a chip tap brings back up.
+  Conversation? _lastHandoff;
 
   bool _loading = true;
   bool _granted = false;
@@ -76,6 +86,7 @@ class _ConversationsScreenState extends State<ConversationsScreen>
     super.initState();
     WidgetsBinding.instance.addObserver(this);
     _load();
+    _refreshChipStatus();
   }
 
   @override
@@ -111,10 +122,105 @@ class _ConversationsScreenState extends State<ConversationsScreen>
     if (state != AppLifecycleState.resumed) return;
     final pending = _mappingPromptPending;
     _mappingPromptPending = null;
-    _load().then((_) {
-      if (pending == null || !mounted) return;
-      _offerNickname(pending);
+    final fromHandoff = _lastHandoff;
+    _lastHandoff = null;
+    _load().then((_) async {
+      // Also re-reads the chip status: the user may have just granted the
+      // overlay permission in Settings.
+      await _refreshChipStatus();
+      final viaChip = await _chip.consumeTapped();
+      if (!mounted) return;
+      if (viaChip && fromHandoff != null) {
+        // Back via the chip: straight to organizing what they just read
+        // (this also covers the nickname offer). Fresh copy if it's listed.
+        final fresh = _conversations
+            .where((c) => c.id == fromHandoff.id)
+            .firstOrNull;
+        _organize(fresh ?? fromHandoff);
+      } else if (pending != null) {
+        _offerNickname(pending);
+      } else if (fromHandoff != null) {
+        // One prompt per return: the nickname offer wins; the chip offer
+        // waits for a later trip.
+        _maybeOfferReturnChip();
+      }
     });
+  }
+
+  Future<void> _refreshChipStatus() async {
+    final s = await _chip.status();
+    if (mounted) setState(() => _chipStatus = s);
+  }
+
+  /// After a handoff: draw the return chip over Messages (no-op unless set
+  /// up) and remember [c] for the way back.
+  void _handedOff(Conversation c) {
+    _queueMappingPrompt(c);
+    _lastHandoff = c;
+    _chip.show();
+  }
+
+  /// Offer the return chip once, the first time the user comes back from
+  /// Messages without it — right when the two-Back trip is fresh.
+  Future<void> _maybeOfferReturnChip() async {
+    final s = _chipStatus;
+    if (s == null || s.active || s.nudged) return;
+    await _chip.markNudged();
+    if (!mounted) return;
+    final turnOn = await showModalBottomSheet<bool>(
+      context: context,
+      showDragHandle: true,
+      builder: (ctx) => SafeArea(
+        child: Padding(
+          padding: const EdgeInsets.fromLTRB(24, 0, 24, 8),
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Text(
+                'One tap back to Threadly',
+                style: Theme.of(ctx).textTheme.titleMedium,
+              ),
+              const SizedBox(height: 8),
+              const Text(
+                'Back in Messages goes to its inbox first. Threadly can show a '
+                'small floating “Threadly” button over Messages after you open '
+                'a conversation: one tap brings you back, ready to organize '
+                'that conversation. It disappears when you return.\n\n'
+                'Android calls this “Display over other apps”: in the list '
+                'that opens, find Threadly and switch it on, then come back. '
+                'You can turn the button off anytime from the ⋮ menu.',
+              ),
+              const SizedBox(height: 16),
+              SizedBox(
+                width: double.infinity,
+                child: FilledButton.icon(
+                  onPressed: () => Navigator.pop(ctx, true),
+                  icon: const Icon(Icons.open_in_new),
+                  label: const Text('Turn on in Settings'),
+                ),
+              ),
+              TextButton(
+                onPressed: () => Navigator.pop(ctx, false),
+                child: const Text('No thanks'),
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+    if (turnOn == true) await _enableReturnChip();
+  }
+
+  /// Turn the chip on: the preference, plus the system permission if needed
+  /// (opens Settings; status refreshes on resume).
+  Future<void> _enableReturnChip() async {
+    await _chip.setEnabled(true);
+    if (_chipStatus?.granted != true) {
+      await _chip.openSettings();
+    } else {
+      await _refreshChipStatus();
+    }
   }
 
   Future<void> _load() async {
@@ -302,6 +408,24 @@ class _ConversationsScreenState extends State<ConversationsScreen>
                       tooltip: 'Refresh',
                       icon: const Icon(Icons.refresh),
                       onPressed: _load,
+                    ),
+                    PopupMenuButton<String>(
+                      onSelected: (v) async {
+                        if (v != 'chip') return;
+                        if (_chipStatus?.active == true) {
+                          await _chip.setEnabled(false);
+                          await _refreshChipStatus();
+                        } else {
+                          await _enableReturnChip();
+                        }
+                      },
+                      itemBuilder: (_) => [
+                        CheckedPopupMenuItem(
+                          value: 'chip',
+                          checked: _chipStatus?.active == true,
+                          child: const Text('“Back to Threadly” button'),
+                        ),
+                      ],
                     ),
                   ],
           ),
@@ -652,7 +776,7 @@ class _ConversationsScreenState extends State<ConversationsScreen>
     //    for every kind, incoming RCS groups included, notification or not).
     //    It relies on undocumented GM extras, hence the fallbacks below.
     if (await _notifs.launch(c.id)) {
-      _queueMappingPrompt(c);
+      _handedOff(c);
       return;
     }
     // 2) Deep-link by number(s): the contact's number for a 1:1, or the saved
@@ -671,12 +795,12 @@ class _ConversationsScreenState extends State<ConversationsScreen>
     if (recipients != null &&
         recipients.isNotEmpty &&
         await openSmsCompose(recipients)) {
-      _queueMappingPrompt(c);
+      _handedOff(c);
       return;
     }
     // 3) Last resort: the Google Messages inbox.
     if (await _notifs.openMessagesApp()) {
-      _queueMappingPrompt(c);
+      _handedOff(c);
       return;
     }
     if (mounted) {

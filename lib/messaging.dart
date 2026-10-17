@@ -1,6 +1,8 @@
 import 'package:flutter/material.dart';
 import 'package:url_launcher/url_launcher.dart';
 
+import 'data/return_chip.dart';
+
 /// Conservative recipient count above which a group text is likely to fail or
 /// split: group MMS is typically capped around this many. RCS groups can go
 /// higher (~100), so this is a *warning* threshold, not a hard limit.
@@ -18,8 +20,11 @@ Future<bool> openSmsCompose(List<String> recipients, {String? body}) async {
     queryParameters:
         (draft != null && draft.isNotEmpty) ? {'body': draft} : null,
   );
-  if (await canLaunchUrl(uri)) {
-    return launchUrl(uri, mode: LaunchMode.externalApplication);
+  if (await canLaunchUrl(uri) &&
+      await launchUrl(uri, mode: LaunchMode.externalApplication)) {
+    // Offer one-tap return over Messages (no-op unless the user enabled it).
+    await ReturnChipService().show();
+    return true;
   }
   return false;
 }

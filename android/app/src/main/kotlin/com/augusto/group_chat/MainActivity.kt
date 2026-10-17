@@ -8,9 +8,47 @@ import io.flutter.plugin.common.MethodChannel
 
 class MainActivity : FlutterActivity() {
     private val channel = "threadly/notifications"
+    private val chipChannel = "threadly/return_chip"
+
+    override fun onResume() {
+        super.onResume()
+        // We're back: the "return to Threadly" chip has done its job.
+        ReturnChip.hide()
+    }
 
     override fun configureFlutterEngine(flutterEngine: FlutterEngine) {
         super.configureFlutterEngine(flutterEngine)
+        MethodChannel(flutterEngine.dartExecutor.binaryMessenger, chipChannel)
+            .setMethodCallHandler { call, result ->
+                when (call.method) {
+                    "status" -> result.success(
+                        mapOf(
+                            "granted" to ReturnChip.granted(this),
+                            "enabled" to ReturnChip.enabled(this),
+                            "nudged" to ReturnChip.nudged(this),
+                        )
+                    )
+                    "setEnabled" -> {
+                        ReturnChip.setEnabled(this, call.argument<Boolean>("on") == true)
+                        result.success(null)
+                    }
+                    "markNudged" -> {
+                        ReturnChip.markNudged(this)
+                        result.success(null)
+                    }
+                    "openSettings" -> {
+                        ReturnChip.openSettings(this)
+                        result.success(null)
+                    }
+                    "show" -> result.success(ReturnChip.show(this))
+                    "consumeTapped" -> result.success(ReturnChip.consumeTapped())
+                    "hide" -> {
+                        ReturnChip.hide()
+                        result.success(null)
+                    }
+                    else -> result.notImplemented()
+                }
+            }
         MethodChannel(flutterEngine.dartExecutor.binaryMessenger, channel)
             .setMethodCallHandler { call, result ->
                 when (call.method) {
