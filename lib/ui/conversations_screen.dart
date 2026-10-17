@@ -42,6 +42,7 @@ class _ConversationsScreenState extends State<ConversationsScreen>
   Conversation? _lastHandoff;
 
   bool _loading = true;
+  bool _loadedOnce = false;
   bool _granted = false;
 
   List<Conversation> _conversations = const [];
@@ -124,7 +125,7 @@ class _ConversationsScreenState extends State<ConversationsScreen>
     _mappingPromptPending = null;
     final fromHandoff = _lastHandoff;
     _lastHandoff = null;
-    _load().then((_) async {
+    _load(reloadContacts: true).then((_) async {
       // Also re-reads the chip status: the user may have just granted the
       // overlay permission in Settings.
       await _refreshChipStatus();
@@ -223,14 +224,23 @@ class _ConversationsScreenState extends State<ConversationsScreen>
     }
   }
 
-  Future<void> _load() async {
-    setState(() => _loading = true);
+  /// Pull everything fresh. Only the very first load shows a spinner; later
+  /// ones (every return from Messages, every edit) refresh in place so the
+  /// list keeps its scroll position and tab. Contacts — the slow part, every
+  /// contact plus its photo — are re-read only when [reloadContacts] (first
+  /// load, return from Messages where a contact may have just been added,
+  /// manual refresh); in-app edits can't change them.
+  Future<void> _load({bool reloadContacts = false}) async {
+    final first = !_loadedOnce;
+    if (first) setState(() => _loading = true);
     final granted = await _notifs.permissionGranted();
-    ContactsSnapshot contacts = ContactsSnapshot.empty;
-    try {
-      contacts = await _contactsService.load();
-    } catch (_) {
-      contacts = ContactsSnapshot.empty;
+    var contacts = _contacts;
+    if (first || reloadContacts) {
+      try {
+        contacts = await _contactsService.load();
+      } catch (_) {
+        contacts = ContactsSnapshot.empty;
+      }
     }
     final conversations = [
       for (final c in granted
@@ -275,6 +285,7 @@ class _ConversationsScreenState extends State<ConversationsScreen>
       _reads = reads;
       _groupRecipients = groupRecipients;
       _loading = false;
+      _loadedOnce = true;
     });
   }
 
@@ -407,7 +418,7 @@ class _ConversationsScreenState extends State<ConversationsScreen>
                     IconButton(
                       tooltip: 'Refresh',
                       icon: const Icon(Icons.refresh),
-                      onPressed: _load,
+                      onPressed: () => _load(reloadContacts: true),
                     ),
                     PopupMenuButton<String>(
                       onSelected: (v) async {
@@ -549,7 +560,7 @@ class _ConversationsScreenState extends State<ConversationsScreen>
             ),
             const SizedBox(height: 8),
             TextButton(
-              onPressed: _load,
+              onPressed: () => _load(reloadContacts: true),
               child: const Text('I’ve enabled it — refresh'),
             ),
           ],
