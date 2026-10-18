@@ -19,7 +19,9 @@ want to read or reply.
   group chats.
 - **Get back in one tap**: an optional floating "Threadly" button over
   Google Messages returns you to the list where you left it, with the
-  conversation you came from highlighted.
+  conversation you came from highlighted. It appears whenever you open a
+  chat from Threadly, and also when you open one by tapping a Google
+  Messages notification, so a new text is one tap from being filed.
 - **Start group texts** from your contacts, named and filed under a category
   before the first message is even sent.
 - **Smart suggestions, on your phone**: from a conversation's recent messages,
@@ -66,7 +68,7 @@ Messages store, so the core features aren't possible there.
 | Notification access | Learn about conversations from Google Messages' notifications |
 | Contacts (read-only) | Show names and photos instead of phone numbers |
 | Notifications, alarms & reminders | The reminders you set on conversations |
-| Display over other apps (optional) | The floating "back to Threadly" button |
+| Display over other apps (optional) | The floating "back to Threadly" button, shown over Google Messages after you open a chat from Threadly or from a notification |
 
 No SMS permissions, no internet access, and no permission to change your
 contacts: "Save to contacts" opens Android's own contact screen, already
