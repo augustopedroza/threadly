@@ -15,6 +15,12 @@ want to read or reply.
   busy inbox splits into the groups of people you actually think in.
 - **Per-conversation notes**: a nickname, a color, a free-text note, and a
   **reminder** that notifies you about a conversation at a time you pick.
+- **Save for later**: swipe a conversation right and pick a time (in an hour,
+  this evening, tomorrow morning, this weekend, next week, or any date). You'll
+  be reminded then; the notification can snooze it for an hour or until
+  tomorrow without opening the app.
+- **Reminders in one place**: the alarm icon lists every reminder, due and
+  upcoming, with what each is for. Open, reschedule, or clear from there.
 - **Open the exact thread** in Google Messages with one tap, including RCS
   group chats.
 - **Get back in one tap**: an optional floating "Threadly" button over

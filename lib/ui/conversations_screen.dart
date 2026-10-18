@@ -13,7 +13,9 @@ import '../models/category.dart';
 import '../models/command.dart';
 import '../models/due_date.dart';
 import 'category_manager_screen.dart';
+import 'later_picker.dart';
 import 'new_group_screen.dart';
+import 'reminders_screen.dart';
 
 /// Bridge-free home: a pure organizer + launcher over Google Messages.
 ///
@@ -432,7 +434,8 @@ class _ConversationsScreenState extends State<ConversationsScreen>
             name: newName ?? ann?.name,
             color: ann?.color,
             note: noteText.isNotEmpty ? noteText : ann?.note,
-            remindAtMs: remindAtMs);
+            remindAtMs: remindAtMs,
+            remindWhat: (remind && remindAt != null) ? s.remindWhat : null);
       }
       if (remind && remindAt != null) {
         await _reminders.ensurePermission();
@@ -746,6 +749,21 @@ class _ConversationsScreenState extends State<ConversationsScreen>
                       icon: const Icon(Icons.folder_outlined),
                       onPressed: _manageCategories,
                     ),
+                    Builder(builder: (context) {
+                      final now = DateTime.now();
+                      final due = _reminderEntries()
+                          .where((e) => !e.when.isAfter(now))
+                          .length;
+                      return IconButton(
+                        tooltip: 'Reminders',
+                        icon: Badge(
+                          isLabelVisible: due > 0,
+                          label: Text('$due'),
+                          child: const Icon(Icons.alarm),
+                        ),
+                        onPressed: _openReminders,
+                      );
+                    }),
                     IconButton(
                       tooltip: 'Refresh',
                       icon: const Icon(Icons.refresh),
@@ -960,15 +978,37 @@ class _ConversationsScreenState extends State<ConversationsScreen>
       trigger: c.id == _blinkId ? _blinkSeq : 0,
       child: Dismissible(
       key: ValueKey('conv-${c.id}'),
-      direction: DismissDirection.endToStart,
+      // Right: save for later (the row stays). Left: forget.
       background: Container(
+        color: Theme.of(context).colorScheme.primaryContainer,
+        alignment: Alignment.centerLeft,
+        padding: const EdgeInsets.symmetric(horizontal: 20),
+        child: Row(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Icon(Icons.snooze,
+                color: Theme.of(context).colorScheme.onPrimaryContainer),
+            const SizedBox(width: 8),
+            Text('Later',
+                style: TextStyle(
+                    color: Theme.of(context).colorScheme.onPrimaryContainer)),
+          ],
+        ),
+      ),
+      secondaryBackground: Container(
         color: Theme.of(context).colorScheme.errorContainer,
         alignment: Alignment.centerRight,
         padding: const EdgeInsets.symmetric(horizontal: 20),
         child: Icon(Icons.delete_outline,
             color: Theme.of(context).colorScheme.onErrorContainer),
       ),
-      confirmDismiss: (_) => _confirmForget(c),
+      confirmDismiss: (direction) async {
+        if (direction == DismissDirection.startToEnd) {
+          await _saveForLater(c);
+          return false;
+        }
+        return _confirmForget(c);
+      },
       onDismissed: (_) => _forget(c),
       child: ListTile(
         isThreeLine: subtitle.length > 1,
@@ -1149,6 +1189,88 @@ class _ConversationsScreenState extends State<ConversationsScreen>
         ),
       );
     }
+  }
+
+  /// Set ([when]) or clear (null) [c]'s reminder without touching the rest
+  /// of its annotation — "save for later", snooze, and the reminders screen.
+  Future<void> _setReminder(Conversation c, DateTime? when) async {
+    final ann = await _store.setReminder(c.id, when?.millisecondsSinceEpoch);
+    if (when == null) {
+      await _reminders.cancel(c.id);
+    } else {
+      await _reminders.ensurePermission();
+      final nickname = ann?.name ?? '';
+      await _reminders.schedule(
+        c.id,
+        title: nickname.isNotEmpty ? nickname : _displayTitle(c),
+        body: ann?.remindWhat ??
+            ((ann?.note?.isNotEmpty ?? false)
+                ? ann!.note
+                : 'You asked to be reminded about this conversation.'),
+        when: when,
+      );
+    }
+    await _load();
+  }
+
+  /// "Save for later" (swipe right): pick a time, set the reminder, and
+  /// offer an undo.
+  Future<void> _saveForLater(Conversation c) async {
+    final before = _annotations[c.id]?.remindAtMs;
+    final when = await pickLater(context, title: 'Save for later');
+    if (when == null || !mounted) return;
+    await _setReminder(c, when);
+    if (!mounted) return;
+    ScaffoldMessenger.of(context)
+      ..hideCurrentSnackBar()
+      ..showSnackBar(SnackBar(
+        content: Text('Saved for later: ${formatDue(when)}'),
+        action: SnackBarAction(
+          label: 'Undo',
+          onPressed: () => _setReminder(
+            c,
+            before != null &&
+                    DateTime.fromMillisecondsSinceEpoch(before)
+                        .isAfter(DateTime.now())
+                ? DateTime.fromMillisecondsSinceEpoch(before)
+                : null,
+          ),
+        ),
+      ));
+  }
+
+  /// Every conversation with a reminder, for the reminders screen.
+  List<ReminderEntry> _reminderEntries() => [
+        for (final c in _conversations)
+          if (_annotations[c.id]?.remindAtMs case final ms?)
+            (
+              conversation: c,
+              title: _displayTitle(c),
+              nickname: _visibleNickname(c),
+              what: _annotations[c.id]?.remindWhat ?? _annotations[c.id]?.note,
+              when: DateTime.fromMillisecondsSinceEpoch(ms),
+            ),
+      ];
+
+  /// The nickname as the list shows it (hidden when it repeats the title).
+  String? _visibleNickname(Conversation c) {
+    final name = _annotations[c.id]?.name?.trim() ?? '';
+    if (name.isEmpty ||
+        name.toLowerCase() == _displayTitle(c).trim().toLowerCase()) {
+      return null;
+    }
+    return name;
+  }
+
+  Future<void> _openReminders() async {
+    await Navigator.of(context).push(MaterialPageRoute<void>(
+      builder: (_) => RemindersScreen(
+        entries: _reminderEntries,
+        setReminder: _setReminder,
+        open: _open,
+      ),
+    ));
+    if (mounted) setState(() {});
   }
 
   /// Who an `sms:` link for [c] addresses: the contact's number for a 1:1,
@@ -1616,9 +1738,9 @@ class _OrganizeSheetState extends State<_OrganizeSheet> {
   final ReminderService _reminders = ReminderService();
   Suggestion? _suggestion;
 
-  /// What an applied suggested reminder is for; its notification text when
-  /// the note is empty.
-  String? _remindWhat;
+  /// What the reminder is for ("Big move at home"): saved with it, shown on
+  /// the reminders screen, and used as the notification text.
+  late String? _remindWhat = widget.annotation?.remindWhat;
 
   // "Ask Threadly": the instruction box, whether it's thinking, what it says
   // back, and a category it proposes (applied on tap).
@@ -2140,35 +2262,13 @@ class _OrganizeSheetState extends State<_OrganizeSheet> {
     if (mounted) setState(() => _categories = cats);
   }
 
-  /// Pick a reminder date + time (must be in the future).
+  /// Pick a reminder time: quick presets or a custom date + time.
   Future<void> _pickReminder() async {
-    final now = DateTime.now();
-    final current = _remindAtMs != null
-        ? DateTime.fromMillisecondsSinceEpoch(_remindAtMs!)
-        : null;
-    final initial = (current != null && current.isAfter(now))
-        ? current
-        : now.add(const Duration(hours: 1));
-    final date = await showDatePicker(
-      context: context,
-      initialDate: initial,
-      firstDate: DateTime(now.year, now.month, now.day),
-      lastDate: DateTime(now.year + 5),
-    );
-    if (date == null || !mounted) return;
-    final time = await showTimePicker(
-      context: context,
-      initialTime: TimeOfDay.fromDateTime(initial),
-    );
-    if (time == null || !mounted) return;
-    final when =
-        DateTime(date.year, date.month, date.day, time.hour, time.minute);
-    if (!when.isAfter(DateTime.now())) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('Pick a time in the future.')),
-      );
-      return;
-    }
+    final when = await pickLater(context,
+        current: _remindAtMs != null
+            ? DateTime.fromMillisecondsSinceEpoch(_remindAtMs!)
+            : null);
+    if (when == null || !mounted) return;
     setState(() => _remindAtMs = when.millisecondsSinceEpoch);
   }
 
@@ -2180,6 +2280,7 @@ class _OrganizeSheetState extends State<_OrganizeSheet> {
       color: _color,
       note: _note.text,
       remindAtMs: _remindAtMs,
+      remindWhat: _remindWhat,
     );
     final when = _remindAtMs != null
         ? DateTime.fromMillisecondsSinceEpoch(_remindAtMs!)
@@ -2202,10 +2303,10 @@ class _OrganizeSheetState extends State<_OrganizeSheet> {
             : (widget.conversation.title.isEmpty
                 ? 'Conversation reminder'
                 : widget.conversation.title),
-        body: note.isNotEmpty
-            ? note
-            : (_remindWhat ??
-                'You asked to be reminded about this conversation.'),
+        body: _remindWhat ??
+            (note.isNotEmpty
+                ? note
+                : 'You asked to be reminded about this conversation.'),
         when: when,
       );
     } else {
@@ -2273,16 +2374,19 @@ class _OrganizeSheetState extends State<_OrganizeSheet> {
               leading: const Icon(Icons.alarm),
               title: Text(_remindAtMs == null
                   ? 'Remind me'
-                  : 'Reminder: ${formatMessageTime(DateTime.fromMillisecondsSinceEpoch(_remindAtMs!))}'),
+                  : 'Reminder: ${formatDue(DateTime.fromMillisecondsSinceEpoch(_remindAtMs!))}'),
               subtitle: _remindAtMs == null
                   ? const Text('Get a notification about this conversation')
-                  : null,
+                  : (_remindWhat != null ? Text(_remindWhat!) : null),
               trailing: _remindAtMs == null
                   ? null
                   : IconButton(
                       tooltip: 'Clear reminder',
                       icon: const Icon(Icons.close),
-                      onPressed: () => setState(() => _remindAtMs = null),
+                      onPressed: () => setState(() {
+                        _remindAtMs = null;
+                        _remindWhat = null;
+                      }),
                     ),
               onTap: _pickReminder,
             ),

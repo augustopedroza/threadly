@@ -112,7 +112,9 @@ Mainline (notification-driven) pieces:
 - `lib/ui/conversations_screen.dart` — `ConversationsScreen`, the **home** (set in `main.dart`).
   Permission onboarding; list sorted by recency with avatars, last-message preview, unread dot,
   nickname/note/category; tabs (All + categories); search (name/nickname/note/category — *not* the
-  preview); tap → handoff; long-press → organize; swipe → forget. Filters out short-code/automated
+  preview); tap → handoff; long-press → organize; swipe left → forget; **swipe right → "Save for
+  later"** (`_saveForLater`: pick a time → a reminder; Undo restores the previous one); alarm icon
+  in the app bar (badge = overdue count) → the Reminders screen. Filters out short-code/automated
   senders via `_isAutomatedSender` (keeps groups, 10+ digit numbers, saved contacts). Hosts the New
   Group flow and the inline `_OrganizeSheet`. Tapping resolves the open target: exact thread via
   `launch(id)` (GM conversation id, any kind); else 1:1 → `sms:` to the contact number / created
@@ -163,6 +165,22 @@ Mainline (notification-driven) pieces:
   `POST_NOTIFICATIONS` runtime permission on save; survives reboots via the plugin's boot receiver.
   Set/cleared in `_OrganizeSheet`, shown as an alarm line on the tile (error-tinted once elapsed),
   cancelled on swipe-forget. Requires core-library desugaring (see `android/app/build.gradle.kts`).
+  Each reminder stores **what it's for** (`remind_what`, e.g. "Big move at home") — the
+  notification text and the Reminders screen subtitle; `setAnnotation` keeps it unless given, and
+  clears it with the reminder. The payload is JSON `{id, title, body}` (`ReminderPayload`; older
+  ones were a bare id). Notification buttons **"Snooze 1 hour" / "Tomorrow morning"** act without
+  opening the app: `onReminderAction` (top-level, `vm:entry-point`) runs in the plugin's background
+  isolate (`DartPluginRegistrant.ensureInitialized()`), moves the stored time
+  (`OrganizerStore.setReminder`) and re-schedules; needs the plugin's `ActionBroadcastReceiver` in
+  the manifest. Home-screen paths (save for later, Reminders screen) go through
+  `_setReminder` → `OrganizerStore.setReminder` (touches only the reminder fields).
+- `lib/ui/reminders_screen.dart` — `RemindersScreen`: every reminder, **Due** (newest first) then
+  **Upcoming**; tap opens the chat (handoff), snooze icon → reschedule, ✓ / swipe → clear (Undo).
+  The home screen owns the data (`_reminderEntries`) and passes callbacks.
+- `lib/ui/later_picker.dart` + `lib/models/later.dart` — `pickLater`: quick times (`laterPresets`:
+  in 1 hour, this evening (before 5 PM), tomorrow morning, this weekend (Mon-Thu), next week (not
+  on Sunday) — 9 AM / 6 PM) plus "Pick date & time…"; used by save for later, the Reminders
+  screen, and the organize sheet's reminder row. Unit-tested in `test/later_test.dart`.
 - `lib/messaging.dart` — the handoff: `openSmsCompose(recipients, {body})`; `launchGroupText(context,
   recipients)` warns if `recipients.length > kGroupTextWarnLimit` (20).
 - `android/.../ConversationSuggester.kt` + `lib/data/suggestions.dart`
@@ -231,14 +249,15 @@ Mainline (notification-driven) pieces:
   color palette. `lib/models/phone.dart` — `normalizePhone(raw)` (digits-only, last 10).
 - `lib/main.dart` — just `main()` (initializes reminders) and `ThreadlyApp` (theme, home).
 
-### SQLite schema (organizer.db, version 7)
+### SQLite schema (organizer.db, version 8)
 
 `onCreate` builds everything; `onUpgrade` migrates: `<2` group-chat tables (dormant now — no
 code reads them; kept so the schema doesn't change), `<3` `name` column on
 `conversation_annotations`, `<4` `conversation_reads`, `<5` `pending_groups` (name/category for a
 group started before it exists, applied + removed on first appearance), `<6` `group_recipients`
 (a created group's full member numbers, for `sms:` reopen), `<7` `remind_at` column on
-`conversation_annotations`. **Bump `version` and add an `onUpgrade`
+`conversation_annotations`, `<8` `remind_what` column (what the reminder is for). **Bump
+`version` and add an `onUpgrade`
 branch for any schema change** — existing installs carry real user data.
 
 `android/app/src/main/AndroidManifest.xml`: the `ConversationNotificationListener` service
@@ -262,6 +281,7 @@ flutter test                    # run all unit tests
 flutter test test/widget_test.dart --plain-name "normalizePhone"   # run tests by name
 flutter test test/due_date_test.dart   # the reminder date resolver
 flutter test test/command_test.dart    # Ask Threadly: forward text, contact matching
+flutter test test/later_test.dart      # save-for-later / snooze time presets
 flutter run                     # run on a connected device/emulator
 flutter build apk --debug       # verify the full Android native stack compiles
 ```

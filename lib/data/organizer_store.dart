@@ -25,7 +25,7 @@ class OrganizerStore {
     final dir = await getDatabasesPath();
     return openDatabase(
       p.join(dir, 'organizer.db'),
-      version: 7,
+      version: 8,
       onCreate: (db, _) async {
         await db.execute('''
           CREATE TABLE groupings(
@@ -46,7 +46,8 @@ class OrganizerStore {
             name TEXT,
             color INTEGER,
             note TEXT,
-            remind_at INTEGER
+            remind_at INTEGER,
+            remind_what TEXT
           )''');
         await _createGroupChatTables(db);
         await _createReadsTable(db);
@@ -65,6 +66,10 @@ class OrganizerStore {
         if (oldVersion < 7) {
           await db.execute(
               'ALTER TABLE conversation_annotations ADD COLUMN remind_at INTEGER');
+        }
+        if (oldVersion < 8) {
+          await db.execute(
+              'ALTER TABLE conversation_annotations ADD COLUMN remind_what TEXT');
         }
       },
     );
@@ -230,12 +235,21 @@ class OrganizerStore {
           color: r['color'] as int?,
           note: r['note'] as String?,
           remindAtMs: r['remind_at'] as int?,
+          remindWhat: r['remind_what'] as String?,
         ),
     };
   }
 
+  /// Replace [threadKey]'s annotation. [remindWhat] (what the reminder is
+  /// for) is kept from the existing row when not given and the reminder
+  /// stays set — so callers that don't know it can't wipe it — and cleared
+  /// with the reminder.
   Future<void> setAnnotation(String threadKey,
-      {String? name, int? color, String? note, int? remindAtMs}) async {
+      {String? name,
+      int? color,
+      String? note,
+      int? remindAtMs,
+      String? remindWhat}) async {
     final db = await _database;
     final cleanNote = (note != null && note.trim().isEmpty) ? null : note?.trim();
     final cleanName = (name != null && name.trim().isEmpty) ? null : name?.trim();
@@ -247,6 +261,19 @@ class OrganizerStore {
           where: 'thread_key = ?', whereArgs: [threadKey]);
       return;
     }
+    var what = (remindWhat != null && remindWhat.trim().isNotEmpty)
+        ? remindWhat.trim()
+        : null;
+    if (remindAtMs == null) {
+      what = null;
+    } else if (remindWhat == null) {
+      final existing = await db.query('conversation_annotations',
+          columns: ['remind_what'],
+          where: 'thread_key = ?',
+          whereArgs: [threadKey],
+          limit: 1);
+      what = existing.isEmpty ? null : existing.first['remind_what'] as String?;
+    }
     await db.insert(
       'conversation_annotations',
       {
@@ -255,9 +282,28 @@ class OrganizerStore {
         'color': color,
         'note': cleanNote,
         'remind_at': remindAtMs,
+        'remind_what': what,
       },
       conflictAlgorithm: ConflictAlgorithm.replace,
     );
+  }
+
+  /// Set or clear (null) just [threadKey]'s reminder, keeping its nickname,
+  /// color, and note — for snoozing, "save for later", and the reminders
+  /// screen. Returns the updated annotation (null if now empty).
+  Future<ConversationAnnotation?> setReminder(String threadKey, int? remindAtMs,
+      {String? remindWhat}) async {
+    final db = await _database;
+    final rows = await db.query('conversation_annotations',
+        where: 'thread_key = ?', whereArgs: [threadKey], limit: 1);
+    final r = rows.isEmpty ? null : rows.first;
+    await setAnnotation(threadKey,
+        name: r?['name'] as String?,
+        color: r?['color'] as int?,
+        note: r?['note'] as String?,
+        remindAtMs: remindAtMs,
+        remindWhat: remindWhat);
+    return (await allAnnotations())[threadKey];
   }
 
   // --- Read markers ------------------------------------------------------

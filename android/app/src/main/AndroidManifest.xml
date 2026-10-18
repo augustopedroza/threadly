@@ -63,6 +63,11 @@
 
         <!-- flutter_local_notifications: delivers scheduled reminders and
              restores them after a reboot / app update. -->
+        <!-- Reminder notification buttons ("Snooze 1 hour", "Tomorrow
+             morning") that act without opening the app. -->
+        <receiver
+            android:exported="false"
+            android:name="com.dexterous.flutterlocalnotifications.ActionBroadcastReceiver" />
         <receiver
             android:name="com.dexterous.flutterlocalnotifications.ScheduledNotificationReceiver"
             android:exported="false" />

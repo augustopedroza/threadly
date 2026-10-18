@@ -33,12 +33,17 @@ class ConversationAnnotation {
   /// show it as elapsed until the user clears or replaces it.
   final int? remindAtMs;
 
+  /// What the reminder is for ("Big move at home"), shown on the reminders
+  /// screen and as the notification text. Only set alongside [remindAtMs].
+  final String? remindWhat;
+
   const ConversationAnnotation({
     required this.threadKey,
     this.name,
     this.color,
     this.note,
     this.remindAtMs,
+    this.remindWhat,
   });
 
   bool get isEmpty =>

@@ -1,6 +1,60 @@
+import 'dart:convert';
+import 'dart:ui' show DartPluginRegistrant;
+
 import 'package:flutter_local_notifications/flutter_local_notifications.dart';
 import 'package:timezone/data/latest_all.dart' as tzdata;
 import 'package:timezone/timezone.dart' as tz;
+
+import '../models/later.dart';
+import 'organizer_store.dart';
+
+const _snoozeHour = 'snooze_1h';
+const _snoozeTomorrow = 'snooze_tomorrow';
+
+/// A tap on the reminder's "Snooze 1 hour" / "Tomorrow morning" buttons.
+/// They don't open Threadly, so the plugin runs this in a background isolate
+/// (also wired for the foreground). Re-schedules the same reminder and moves
+/// the stored time so the list and reminders screen agree.
+@pragma('vm:entry-point')
+Future<void> onReminderAction(NotificationResponse response) async {
+  DartPluginRegistrant.ensureInitialized();
+  final action = response.actionId;
+  if (action != _snoozeHour && action != _snoozeTomorrow) return;
+  final payload = ReminderPayload.decode(response.payload);
+  if (payload == null) return;
+  final now = DateTime.now();
+  final when =
+      action == _snoozeHour ? snoozeAnHour(now) : snoozeTomorrow(now);
+  await OrganizerStore().setReminder(payload.id, when.millisecondsSinceEpoch);
+  await ReminderService().schedule(payload.id,
+      title: payload.title, body: payload.body, when: when);
+}
+
+/// What a scheduled reminder carries, so a snooze can re-post it as is.
+/// Older reminders carried just the conversation id.
+class ReminderPayload {
+  const ReminderPayload(this.id, this.title, this.body);
+
+  final String id;
+  final String title;
+  final String? body;
+
+  String encode() => jsonEncode({'id': id, 'title': title, 'body': body});
+
+  static ReminderPayload? decode(String? raw) {
+    if (raw == null || raw.isEmpty) return null;
+    try {
+      final m = jsonDecode(raw);
+      if (m is Map && m['id'] is String) {
+        return ReminderPayload(m['id'] as String,
+            (m['title'] as String?) ?? 'Conversation reminder', m['body'] as String?);
+      }
+    } on FormatException {
+      // A plain conversation id.
+    }
+    return ReminderPayload(raw, 'Conversation reminder', null);
+  }
+}
 
 /// Schedules the local "reminder" notifications the user sets on a
 /// conversation — the only notifications Threadly ever posts (the listener
@@ -27,6 +81,8 @@ class ReminderService {
         // app's own glyph where a full-color mipmap would be a gray square.
         android: AndroidInitializationSettings('@drawable/ic_launcher_foreground'),
       ),
+      onDidReceiveNotificationResponse: onReminderAction,
+      onDidReceiveBackgroundNotificationResponse: onReminderAction,
     );
     _initialized = true;
   }
@@ -72,12 +128,19 @@ class ReminderService {
           // Full-color Threadly icon shown on the notification itself (the
           // small icon above is the tinted status-bar silhouette).
           largeIcon: DrawableResourceAndroidBitmap('@mipmap/ic_launcher'),
+          // Snooze without opening Threadly (handled by onReminderAction).
+          actions: [
+            AndroidNotificationAction(_snoozeHour, 'Snooze 1 hour',
+                cancelNotification: true),
+            AndroidNotificationAction(_snoozeTomorrow, 'Tomorrow morning',
+                cancelNotification: true),
+          ],
         ),
       ),
       androidScheduleMode: exact
           ? AndroidScheduleMode.exactAllowWhileIdle
           : AndroidScheduleMode.inexactAllowWhileIdle,
-      payload: conversationId,
+      payload: ReminderPayload(conversationId, title, body).encode(),
     );
   }
 
