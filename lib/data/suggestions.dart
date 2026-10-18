@@ -1,11 +1,18 @@
 import 'package:flutter/services.dart';
 
+import '../models/due_date.dart';
 import 'notifications.dart';
 
 /// What the on-device model proposes for a conversation. Any field may be
 /// null; the UI always asks before saving any of it.
 class Suggestion {
-  const Suggestion({this.nickname, this.note, this.category});
+  const Suggestion({
+    this.nickname,
+    this.note,
+    this.category,
+    this.remindAt,
+    this.remindWhat,
+  });
 
   /// A group's main topic ("Soccer carpool"), or for a raw-number 1:1 the
   /// person's own name when they state it (also offered as a new contact).
@@ -18,7 +25,29 @@ class Suggestion {
   /// One of the user's existing category names (never a new one).
   final String? category;
 
-  bool get isEmpty => nickname == null && note == null && category == null;
+  /// When to remind: an upcoming date/time mentioned in a message, resolved
+  /// from its words (see `parseDueDate`). Always in the future.
+  final DateTime? remindAt;
+
+  /// What [remindAt] is for, e.g. "Soccer practice".
+  final String? remindWhat;
+
+  bool get isEmpty =>
+      nickname == null && note == null && category == null && remindAt == null;
+
+  Suggestion copyWith({
+    bool dropNickname = false,
+    bool dropNote = false,
+    bool dropCategory = false,
+    bool dropRemind = false,
+  }) =>
+      Suggestion(
+        nickname: dropNickname ? null : nickname,
+        note: dropNote ? null : note,
+        category: dropCategory ? null : category,
+        remindAt: dropRemind ? null : remindAt,
+        remindWhat: dropRemind ? null : remindWhat,
+      );
 }
 
 /// On-device organizing suggestions (Gemini Nano through Android's AICore;
@@ -51,11 +80,31 @@ class SuggestionService {
         nickname: m['nickname'],
         note: m['note'],
         category: m['category'],
+        remindAt: _resolveDue(m['dueText'], m['dueRef']),
+        remindWhat: m['dueWhat'],
       );
       return s.isEmpty ? null : s;
     } on PlatformException {
       return null;
     }
+  }
+
+  /// The model's copied date words, resolved against when that message was
+  /// sent; only a moment in the coming year counts (past plans are moot).
+  static DateTime? _resolveDue(String? words, String? refMs) {
+    if (words == null) return null;
+    final ref = int.tryParse(refMs ?? '');
+    final due = parseDueDate(
+      words,
+      ref != null ? DateTime.fromMillisecondsSinceEpoch(ref) : DateTime.now(),
+    );
+    final now = DateTime.now();
+    if (due == null ||
+        !due.when.isAfter(now) ||
+        due.when.isAfter(now.add(const Duration(days: 366)))) {
+      return null;
+    }
+    return due.when;
   }
 
   /// Never offer suggestions for [id] on return from Messages again.

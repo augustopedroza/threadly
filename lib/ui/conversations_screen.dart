@@ -89,6 +89,10 @@ class _ConversationsScreenState extends State<ConversationsScreen>
   /// session; "Don't suggest" is remembered natively for good.
   final Set<String> _suggestDeferred = {};
 
+  /// Reminder suggestions already offered this session ("id|epoch ms"), so
+  /// the same date isn't offered again on every return.
+  final Set<String> _offeredReminders = {};
+
   bool _searching = false;
   String _query = '';
   final TextEditingController _searchController = TextEditingController();
@@ -150,11 +154,11 @@ class _ConversationsScreenState extends State<ConversationsScreen>
               .where((x) => x.id == fromHandoff.id)
               .firstOrNull ??
           fromHandoff;
-      final suggestion = _wantsReturnSuggestion(c)
-          ? _suggestFor(c)
-          : Future<Suggestion?>.value();
+      final suggestion = _suggestDeferred.contains(c.id)
+          ? Future<Suggestion?>.value()
+          : _suggestFor(c);
       await Future<void>.delayed(_Blink.duration);
-      final s = await suggestion;
+      final s = _returnOffer(c, await suggestion);
       if (!mounted) return;
       // One prompt per return, in this order: a suggestion (which also covers
       // the raw-number nickname offer), the plain nickname offer, then the
@@ -183,15 +187,31 @@ class _ConversationsScreenState extends State<ConversationsScreen>
       _numberFromTitle(c.title) != null &&
       _contacts.nameForPhone(c.title) == null;
 
-  /// Only conversations not organized at all yet (no nickname, note, or
-  /// category) get a return prompt, so filed ones are never nagged. The
-  /// organize sheet always shows suggestions.
-  bool _wantsReturnSuggestion(Conversation c) {
+  /// What, if anything, to offer on return from Messages. A conversation
+  /// not organized at all yet (no nickname, note, or category) gets the full
+  /// suggestion; an organized one only a *new* reminder (a date mentioned
+  /// since), so filed chats aren't nagged. Fields already set are dropped.
+  /// The organize sheet always shows everything.
+  Suggestion? _returnOffer(Conversation c, Suggestion? s) {
+    if (s == null) return null;
     final ann = _annotations[c.id];
-    return !_suggestDeferred.contains(c.id) &&
-        ann?.name?.isNotEmpty != true &&
+    final remindKey = '${c.id}|${s.remindAt?.millisecondsSinceEpoch}';
+    final offer = s.copyWith(
+      dropNickname: ann?.name?.isNotEmpty == true,
+      dropNote: ann?.note?.isNotEmpty == true,
+      dropRemind: s.remindAt == null ||
+          s.remindAt!.millisecondsSinceEpoch == ann?.remindAtMs ||
+          _offeredReminders.contains(remindKey),
+    );
+    final unorganized = ann?.name?.isNotEmpty != true &&
         ann?.note?.isNotEmpty != true &&
         _categoryIdsFor(c).isEmpty;
+    final result = unorganized
+        ? offer
+        : offer.copyWith(dropNickname: true, dropNote: true, dropCategory: true);
+    if (result.isEmpty) return null;
+    if (result.remindAt != null) _offeredReminders.add(remindKey);
+    return result;
   }
 
   Future<Suggestion?> _suggestFor(Conversation c, {bool force = false}) {
@@ -220,6 +240,12 @@ class _ConversationsScreenState extends State<ConversationsScreen>
     final nickname = TextEditingController(text: s.nickname ?? '');
     final note = TextEditingController(text: s.note ?? '');
     var addCategory = category != null;
+    final remindAt = s.remindAt;
+    var remind = remindAt != null;
+    // One reminder per conversation: say so when this would replace one.
+    final existing = _annotations[c.id]?.remindAtMs;
+    final replaces = existing != null &&
+        DateTime.fromMillisecondsSinceEpoch(existing).isAfter(DateTime.now());
     final choice = await showModalBottomSheet<String>(
       context: context,
       isScrollControlled: true,
@@ -292,6 +318,22 @@ class _ConversationsScreenState extends State<ConversationsScreen>
                         radius: 6, backgroundColor: Color(category.color)),
                     title: Text('Add to ${category.name}'),
                   ),
+                if (remindAt != null)
+                  CheckboxListTile(
+                    contentPadding: EdgeInsets.zero,
+                    value: remind,
+                    onChanged: (v) => setSheet(() => remind = v ?? false),
+                    secondary: const Icon(Icons.alarm),
+                    title: Text('Remind me ${formatDue(remindAt)}'),
+                    subtitle: (s.remindWhat != null || replaces)
+                        ? Text([
+                            ?s.remindWhat,
+                            if (replaces)
+                              'Replaces your reminder for '
+                                  '${formatDue(DateTime.fromMillisecondsSinceEpoch(existing))}',
+                          ].join(' · '))
+                        : null,
+                  ),
                 const SizedBox(height: 8),
                 SizedBox(
                   width: double.infinity,
@@ -331,13 +373,31 @@ class _ConversationsScreenState extends State<ConversationsScreen>
         await _suggest.saveContact(person!, number!);
       case 'save':
         final ann = _annotations[c.id];
-        if (name.isNotEmpty || noteText.isNotEmpty) {
+        final remindAtMs = (remind && remindAt != null)
+            ? remindAt.millisecondsSinceEpoch
+            : ann?.remindAtMs;
+        if (name.isNotEmpty ||
+            noteText.isNotEmpty ||
+            remindAtMs != ann?.remindAtMs) {
           // Keep the rest of the annotation: setAnnotation replaces the row.
           await _store.setAnnotation(c.id,
               name: name.isNotEmpty ? name : ann?.name,
               color: ann?.color,
               note: noteText.isNotEmpty ? noteText : ann?.note,
-              remindAtMs: ann?.remindAtMs);
+              remindAtMs: remindAtMs);
+        }
+        if (remind && remindAt != null) {
+          await _reminders.ensurePermission();
+          final shownName = name.isNotEmpty ? name : (ann?.name ?? '');
+          await _reminders.schedule(
+            c.id,
+            title: shownName.isNotEmpty ? shownName : _displayTitle(c),
+            body: s.remindWhat ??
+                (noteText.isNotEmpty
+                    ? noteText
+                    : 'You asked to be reminded about this conversation.'),
+            when: remindAt,
+          );
         }
         if (addCategory && category != null) {
           await _store.setMembership(category.id, c.id, true);
@@ -1425,6 +1485,10 @@ class _OrganizeSheetState extends State<_OrganizeSheet> {
   final ReminderService _reminders = ReminderService();
   Suggestion? _suggestion;
 
+  /// What an applied suggested reminder is for; its notification text when
+  /// the note is empty.
+  String? _remindWhat;
+
   @override
   void initState() {
     super.initState();
@@ -1449,26 +1513,47 @@ class _OrganizeSheetState extends State<_OrganizeSheet> {
       if (nickname != null && _name.text.trim() != nickname)
         ActionChip(
           avatar: const Icon(Icons.auto_awesome, size: 18),
-          label: Text('Nickname: $nickname'),
+          label: Text('Nickname: $nickname',
+              maxLines: 1, overflow: TextOverflow.ellipsis),
           onPressed: () => setState(() => _name.text = nickname),
         ),
       if (note != null && _note.text.trim().isEmpty)
         ActionChip(
           avatar: const Icon(Icons.auto_awesome, size: 18),
-          label: Text('Note: $note'),
+          label: Text('Note: $note',
+              maxLines: 1, overflow: TextOverflow.ellipsis),
           onPressed: () => setState(() => _note.text = note),
+        ),
+      if (s.remindAt != null &&
+          _remindAtMs != s.remindAt!.millisecondsSinceEpoch)
+        ActionChip(
+          avatar: const Icon(Icons.alarm, size: 18),
+          label: Text(
+            [
+              'Remind ${formatDue(s.remindAt!)}',
+              ?s.remindWhat,
+            ].join(' · '),
+            maxLines: 1,
+            overflow: TextOverflow.ellipsis,
+          ),
+          onPressed: () => setState(() {
+            _remindAtMs = s.remindAt!.millisecondsSinceEpoch;
+            _remindWhat = s.remindWhat;
+          }),
         ),
       if (category != null && !_selected.contains(category.id))
         ActionChip(
           avatar: CircleAvatar(
               radius: 6, backgroundColor: Color(category.color)),
-          label: Text('Add to ${category.name}'),
+          label: Text('Add to ${category.name}',
+              maxLines: 1, overflow: TextOverflow.ellipsis),
           onPressed: () => _toggleCategory(category, true),
         ),
       if (person != null)
         ActionChip(
           avatar: const Icon(Icons.person_add_alt_1_outlined, size: 18),
-          label: Text('Save $person to contacts'),
+          label: Text('Save $person to contacts',
+              maxLines: 1, overflow: TextOverflow.ellipsis),
           onPressed: () =>
               widget.suggestService.saveContact(person, widget.rawNumber!),
         ),
@@ -1586,7 +1671,8 @@ class _OrganizeSheetState extends State<_OrganizeSheet> {
                 : widget.conversation.title),
         body: note.isNotEmpty
             ? note
-            : 'You asked to be reminded about this conversation.',
+            : (_remindWhat ??
+                'You asked to be reminded about this conversation.'),
         when: when,
       );
     } else {

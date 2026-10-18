@@ -22,7 +22,12 @@ import kotlinx.coroutines.launch
  *    is Ana Lima") — which the UI also offers as a new contact. A saved
  *    contact gets none (its name already shows);
  *  - a note on what the chat is about;
- *  - the best fit among the user's existing categories.
+ *  - the best fit among the user's existing categories;
+ *  - a reminder: a date/time someone mentions for an upcoming plan or
+ *    deadline. The model only *copies* the date words ("Saturday at 9am") and
+ *    says what they're for; turning them into a date is deterministic Dart
+ *    (`lib/models/due_date.dart`), anchored to when that message was sent —
+ *    small models copy text well but get date arithmetic wrong.
  * Nothing leaves the phone; there's no network permission. The UI always asks
  * before saving anything.
  *
@@ -92,8 +97,10 @@ object ConversationSuggester {
     }
 
     /**
-     * Suggest for one conversation: `{"nickname", "note", "category"}` (each
-     * may be absent), or null for nothing useful / AI unavailable / dismissed.
+     * Suggest for one conversation: `{"nickname", "note", "category",
+     * "dueText", "dueWhat", "dueRef"}` (each may be absent; `dueRef` is the
+     * epoch ms of the message the date words came from, as a string), or null
+     * for nothing useful / AI unavailable / dismissed.
      * [categories] are the user's categories this conversation isn't in yet
      * (a suggestion is always one of them, never a new one). [wantName] marks
      * a raw-number 1:1, whose nickname is the person's name. [force] ignores
@@ -125,12 +132,12 @@ object ConversationSuggester {
                 ) {
                     temperature = 0.2f
                     topK = 10
-                    maxOutputTokens = 64
+                    maxOutputTokens = 96
                 }
             )
             parse(
                 response.candidates.firstOrNull()?.text.orEmpty(),
-                title, isGroup, wantName, categories,
+                title, isGroup, wantName, categories, messages,
             )
         } catch (e: GenAiException) {
             // BUSY / quota / background: no suggestion this time, try again later.
@@ -146,11 +153,11 @@ object ConversationSuggester {
         isGroup: Boolean,
         wantName: Boolean,
         categories: List<String>,
-        messages: List<Pair<String, String>>,
+        messages: List<RecentMessage>,
     ): String {
-        val lines = messages.joinToString("\n") { (sender, text) ->
-            val who = sender.ifEmpty { if (isGroup) "Someone" else title }
-            "$who: ${text.take(300).replace('\n', ' ')}"
+        val lines = messages.joinToString("\n") { m ->
+            val who = m.sender.ifEmpty { if (isGroup) "Someone" else title }
+            "$who: ${m.text.take(300).replace('\n', ' ')}"
         }
         val kind = if (isGroup) "a group chat" else "a one-on-one chat"
         val nicknameHint = when {
@@ -167,9 +174,11 @@ object ConversationSuggester {
         // labels in its answer. The example matches the chat type and avoids
         // categories and names, so it doesn't nudge toward guessing.
         val example = if (isGroup) {
-            "NICKNAME: Book club\nNOTE: Picking next month's book\nCATEGORY: NONE"
+            "NICKNAME: Book club\nNOTE: Picking next month's book\nCATEGORY: NONE\n" +
+                "REMIND: Thursday at 7pm | Book club meeting"
         } else {
-            "NICKNAME: NONE\nNOTE: Questions about rent and repairs\nCATEGORY: NONE"
+            "NICKNAME: NONE\nNOTE: Questions about rent and repairs\nCATEGORY: NONE\n" +
+                "REMIND: NONE"
         }
         return buildString {
             appendLine("You help organize a phone's text conversations.")
@@ -177,7 +186,7 @@ object ConversationSuggester {
             appendLine(lines)
             appendLine()
             appendLine(
-                "Fill in this template. Keep the three labels exactly. Write NONE for " +
+                "Fill in this template. Keep the four labels exactly. Write NONE for " +
                     "anything you can't tell from the messages."
             )
             appendLine("NICKNAME: $nicknameHint")
@@ -186,6 +195,12 @@ object ConversationSuggester {
                     "(a sport, rent, a trip, a project)>"
             )
             appendLine("CATEGORY: $categoryHint")
+            appendLine(
+                "REMIND: <for an upcoming plan, event, or deadline: the date/time words " +
+                    "copied exactly as written in a message (e.g. Saturday at 9am, Oct 20, " +
+                    "tomorrow at noon), then | and what it is in 2-5 words. NONE if no " +
+                    "message mentions a future date or time>"
+            )
             appendLine()
             appendLine("Example answer:")
             append(example)
@@ -198,11 +213,12 @@ object ConversationSuggester {
         isGroup: Boolean,
         wantName: Boolean,
         categories: List<String>,
+        messages: List<RecentMessage>,
     ): Map<String, String> {
         val lines = raw.lineSequence().map { it.trim() }.filter { it.isNotEmpty() }.toList()
-        val keys = listOf("NICKNAME", "NOTE", "CATEGORY")
-        // The model sometimes drops the labels; three bare lines are then
-        // read in template order.
+        val keys = listOf("NICKNAME", "NOTE", "CATEGORY", "REMIND")
+        // The model sometimes drops the labels; bare lines are then read in
+        // template order.
         val labeled = lines.any { l -> keys.any { l.startsWith("$it:", ignoreCase = true) } }
         fun field(key: String): String? {
             val line = if (labeled) {
@@ -212,8 +228,9 @@ object ConversationSuggester {
                 lines.takeIf { it.size == keys.size }?.get(keys.indexOf(key))
             } ?: return null
             val v = line.trim().trim('"', '\'', '*', '.', '<', '>', ' ')
-            // "NONE", but also "NONE - NONE" and the like.
-            val rest = v.replace(Regex("(?i)\\bnone\\b"), "").trim(' ', '-', '/', ',', '\u2013')
+            // "NONE", but also "NONE - NONE", "NONE | NONE" and the like.
+            val rest = v.replace(Regex("(?i)\\bnone\\b"), "")
+                .trim(' ', '-', '/', ',', '|', '\u2013')
             if (v.isEmpty() || rest.isEmpty()) return null
             return v
         }
@@ -243,6 +260,25 @@ object ConversationSuggester {
         field("CATEGORY")?.let { v ->
             categories.firstOrNull { it.equals(v, ignoreCase = true) }
                 ?.let { out["category"] = it }
+        }
+        // "Saturday at 9am | Practice". Keep the words only if they really
+        // appear in a message (no invented dates), and pass along when that
+        // message was sent: relative words resolve against it in Dart.
+        field("REMIND")?.let { v ->
+            val words = v.substringBefore('|').trim().trim('"', '\'', '.', ' ')
+            val what = v.substringAfter('|', "").trim().trim('"', '\'', '.', ' ')
+            if (words.isEmpty() || words.length > 40) return@let
+            val norm = { t: String -> t.lowercase().replace(Regex("\\s+"), " ") }
+            val source = messages.lastOrNull { norm(it.text).contains(norm(words)) }
+                ?: return@let
+            out["dueText"] = words
+            if (what.isNotEmpty() && what.length <= 40 &&
+                !what.equals("none", ignoreCase = true)
+            ) {
+                out["dueWhat"] = what
+            }
+            out["dueRef"] = (if (source.time > 0) source.time else System.currentTimeMillis())
+                .toString()
         }
         return out
     }

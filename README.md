@@ -25,8 +25,10 @@ want to read or reply.
 - **Smart suggestions, on your phone**: from a conversation's recent messages,
   Threadly suggests a nickname (a group's main topic, or the person's name when
   an unknown number introduces themselves), a note on what the chat is about,
-  and which of your categories it fits. For an unknown number it can also offer
-  to **save the person to your contacts**. Nothing is saved until you confirm.
+  which of your categories it fits, and a **reminder** when someone mentions an
+  upcoming date ("practice Saturday at 9am"). For an unknown number it can also
+  offer to **save the person to your contacts**. Nothing is saved until you
+  confirm.
 - **Search** by name, nickname, note, or category.
 
 ## How it works (and what it can't see)

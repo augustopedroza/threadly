@@ -7,6 +7,11 @@ import android.service.notification.NotificationListenerService
 import android.service.notification.StatusBarNotification
 import org.json.JSONObject
 
+/** One buffered message: who sent it ("Me" for the user, "" when unknown),
+ *  its text, and when it was sent (epoch ms). See
+ *  [ConversationNotificationListener.recentMessages]. */
+data class RecentMessage(val sender: String, val text: String, val time: Long)
+
 /**
  * The conversation feed.
  *
@@ -223,22 +228,25 @@ class ConversationNotificationListener : NotificationListenerService() {
             ctx.getSharedPreferences(RECENT_PREFS, Context.MODE_PRIVATE)
 
         /**
-         * The conversation's recent messages, oldest first, as (sender, text) —
-         * see [rememberRecent]. Falls back to the stored preview alone when no
-         * bundle has been seen yet (conversations from before this existed).
+         * The conversation's recent messages, oldest first — see
+         * [rememberRecent]. Falls back to the stored preview alone (timed at
+         * the conversation's last activity) when no bundle has been seen yet
+         * (conversations from before this existed).
          */
-        fun recentMessages(ctx: Context, id: String): List<Pair<String, String>> {
+        fun recentMessages(ctx: Context, id: String): List<RecentMessage> {
             val all = JSONObject(recentPrefs(ctx).getString(KEY_RECENT, "{}") ?: "{}")
             val arr = all.optJSONArray(id)
             if (arr != null && arr.length() > 0) {
                 return (0 until arr.length()).map {
                     val e = arr.getJSONObject(it)
-                    e.optString("s") to e.optString("x")
+                    RecentMessage(e.optString("s"), e.optString("x"), e.optLong("t"))
                 }
             }
             val convos = JSONObject(prefs(ctx).getString(KEY_CONVOS, "{}") ?: "{}")
-            val preview = convos.optJSONObject(id)?.optString("preview").orEmpty()
-            return if (preview.isEmpty()) emptyList() else listOf("" to preview)
+            val entry = convos.optJSONObject(id)
+            val preview = entry?.optString("preview").orEmpty()
+            return if (preview.isEmpty()) emptyList()
+            else listOf(RecentMessage("", preview, entry?.optLong("ts") ?: 0L))
         }
 
         /** Newest-message marker for [id], so suggestions can be cached until

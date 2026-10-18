@@ -9,8 +9,8 @@ user's existing texts. It learns which conversations exist and when they last go
 one-line **last-message preview** for each, lets the user **organize** them (categories, custom
 nicknames, colors, notes, reminders, group rosters), then **hands off to Google Messages** for all reading and
 sending. It also reads contact names/photos (read-only) to show them over raw numbers, and offers
-**on-device AI suggestions** (nickname, note, category, save-as-contact) that the user confirms. The
-pitch: organize here, read/send in the app you already use.
+**on-device AI suggestions** (nickname, note, category, reminder, save-as-contact) that the user
+confirms. The pitch: organize here, read/send in the app you already use.
 
 The message content Threadly keeps is that last-message preview plus a rolling **buffer of the last
 10 messages per conversation**, the input for suggestions. Both come straight from the Google Messages
@@ -124,13 +124,17 @@ Mainline (notification-driven) pieces:
   handoff to a raw-number 1:1 (no contact, no nickname), returning to Threadly shows a **mapping
   prompt** (`_queueMappingPrompt` → resume) offering the organize sheet; "don't ask" declines are
   in-memory (per session). Groups deliberately get no such prompt — see the constraint note below.
-  If the conversation is **unorganized** (no nickname, note, or category) and the on-device model has
-  a suggestion, `_offerSuggestion` replaces those prompts (one prompt per return): editable nickname
-  / note, an "Add to <category>" checkbox, "Save <name> to contacts" for raw numbers, Not now
-  (session) / Don't suggest for this one (permanent, native). The organize sheet always shows
-  tap-to-apply suggestion chips (`_suggestionChips`, `force: true`); its request starts once in
-  `_organize`, not in the builder. `setAnnotation` replaces the whole row, so saves carry over the
-  other fields. A raw-number 1:1 shows its contact name once saved (`_displayTitle`).
+  On return the on-device model is asked too; `_returnOffer` decides what to show: an
+  **unorganized** conversation (no nickname, note, or category) gets the whole suggestion, an
+  organized one only a **new reminder** (each "id|time" offered once per session, `_offeredReminders`),
+  and fields already set are dropped. If anything's left, `_offerSuggestion` replaces those prompts
+  (one prompt per return): editable nickname / note, "Add to <category>" and "Remind me <when>"
+  checkboxes (the latter notes when it replaces an existing reminder; saving schedules it via
+  `ReminderService`), "Save <name> to contacts" for raw numbers, Not now (session) / Don't suggest
+  for this one (permanent, native). The organize sheet always shows tap-to-apply suggestion chips
+  (`_suggestionChips`, `force: true`); its request starts once in `_organize`, not in the builder.
+  `setAnnotation` replaces the whole row, so saves carry over the other fields. A raw-number 1:1
+  shows its contact name once saved (`_displayTitle`).
   Swipe-forget clears the conversation's annotation, memberships, reminder, and saved roster.
 - `lib/ui/new_group_screen.dart` — pick people (`lib/ui/people_picker.dart`, a searchable
   multi-select) + optional name/category → `launchGroupText` + store a
@@ -157,12 +161,18 @@ Mainline (notification-driven) pieces:
   (`MethodChannel("threadly/suggest")`: `suggest`, `dismiss`, `saveContact`) — on-device suggestions
   via **Gemini Nano / ML Kit GenAI Prompt API** (`com.google.mlkit:genai-prompt`, hence `minSdk 26`).
   Free, offline, no network permission. From the conversation's recent messages it proposes
-  `{nickname, note, category}`: nickname = a **group's main topic**, or for a **raw-number 1:1 the
-  person's own name** when they state it (also offered as a contact); none for a saved contact (its
-  name already shows). Note = what the chat is about (2-10 words). Category = one of the user's
-  existing categories it isn't in (never a new one). The prompt is a literal labeled template plus a
-  per-kind example (Nano drops labels otherwise; the parser also reads 3 bare lines positionally,
-  and treats "NONE - NONE" etc. as empty). Results are cached in memory per (last activity,
+  `{nickname, note, category, reminder}`: nickname = a **group's main topic**, or for a **raw-number
+  1:1 the person's own name** when they state it (also offered as a contact); none for a saved
+  contact (its name already shows). Note = what the chat is about (2-10 words). Category = one of
+  the user's existing categories it isn't in (never a new one). **Reminder**: the model only *copies*
+  the date words of an upcoming plan/deadline ("Saturday at 9am | Practice"), kept only if they
+  really appear in a message; native passes them with that message's send time (`dueRef`), and
+  `lib/models/due_date.dart` `parseDueDate` resolves them **deterministically** (weekdays, today/
+  tonight/tomorrow, "Oct 20", "10/31", "the 1st", lone times; US month/day; no time → 9:00 AM;
+  bare hours 1-7 → PM; unit-tested in `test/due_date_test.dart`) — small models get date math
+  wrong. Only moments in the coming year count. The prompt is a literal labeled template plus a
+  per-kind example (Nano drops labels otherwise; the parser also reads bare lines positionally,
+  and treats "NONE - NONE", "NONE | NONE" etc. as empty). Results are cached in memory per (last activity,
   wantName, categories). AICore realities: inference **only for the app on screen**
   (`BACKGROUND_USE_BLOCKED`, so never from the listener), per-app quota (`BUSY`/battery), supported
   devices only (Pixel 9/10 and some flagships), and a one-time model download (~3 min on the test
@@ -213,6 +223,7 @@ flutter pub get                 # install deps
 flutter analyze                 # lint (must be clean; flutter_lints / analysis_options.yaml)
 flutter test                    # run all unit tests
 flutter test test/widget_test.dart --plain-name "normalizePhone"   # run tests by name
+flutter test test/due_date_test.dart   # the reminder date resolver
 flutter run                     # run on a connected device/emulator
 flutter build apk --debug       # verify the full Android native stack compiles
 ```
@@ -220,8 +231,8 @@ flutter build apk --debug       # verify the full Android native stack compiles
 ## Verification reality
 
 `flutter analyze`, `flutter test`, and the debug APK build are the CI-equivalent checks and must
-pass. The unit tests cover only the pure-Dart model (`test/widget_test.dart`); everything
-platform-bound is verified by running the app.
+pass. The unit tests cover only pure Dart (`test/widget_test.dart`: models; `test/due_date_test.dart`:
+reminder date resolution); everything platform-bound is verified by running the app.
 
 A **plugged-in Android device or emulator** is required to exercise the notification source,
 contact resolution, and the `sms:` handoff — macOS/Chrome/iOS targets can't. The conversation list
