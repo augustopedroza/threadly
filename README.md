@@ -22,15 +22,26 @@ want to read or reply.
   conversation you came from highlighted.
 - **Start group texts** from your contacts, named and filed under a category
   before the first message is even sent.
+- **Smart suggestions, on your phone**: from a conversation's recent messages,
+  Threadly suggests a nickname (a group's main topic, or the person's name when
+  an unknown number introduces themselves), a note on what the chat is about,
+  and which of your categories it fits. For an unknown number it can also offer
+  to **save the person to your contacts**. Nothing is saved until you confirm.
 - **Search** by name, nickname, note, or category.
 
 ## How it works (and what it can't see)
 
 Most texts on a modern Android phone are **RCS**, and no third-party app can
-read the RCS message store. So Threadly never reads messages. It uses
-**notification access** to observe Google Messages' notifications, which
+read the RCS message store. So Threadly never reads your message history. It
+uses **notification access** to observe Google Messages' notifications, which
 carry a conversation's name, when it last got a message, whether it's unread,
-and the text of the latest incoming message.
+and the text of the latest few messages. Threadly keeps the last 10 per
+conversation, on the phone only, for its suggestions.
+
+Suggestions run on **Gemini Nano, the AI built into recent Android phones**
+(through Android's AICore). It works offline, costs nothing, and your
+messages never leave the device. On phones without it, everything else works
+the same; you just don't get suggestions.
 
 That design has some consequences:
 
@@ -40,6 +51,8 @@ That design has some consequences:
   notification).
 - Threadly **never sends** anything. Composing and sending always happen in
   Google Messages, so every message lands in your real history.
+- Suggestions start from what's in the notifications, so they get better as
+  new messages arrive after install.
 
 **Android only.** iOS doesn't let apps read other apps' notifications or the
 Messages store, so the core features aren't possible there.
@@ -53,12 +66,16 @@ Messages store, so the core features aren't possible there.
 | Notifications, alarms & reminders | The reminders you set on conversations |
 | Display over other apps (optional) | The floating "back to Threadly" button |
 
-No SMS permissions and no internet access. Everything Threadly stores
-(categories, notes, reminders) stays on the device.
+No SMS permissions, no internet access, and no permission to change your
+contacts: "Save to contacts" opens Android's own contact screen, already
+filled in, for you to confirm. Everything Threadly stores (categories, notes,
+reminders, recent messages) stays on the device.
 
 ## Requirements
 
-- Android with **Google Messages** as the messaging app
+- Android 8.0 or later, with **Google Messages** as the messaging app
+- For suggestions: a phone with Gemini Nano (e.g. Pixel 9 and 10 series). The
+  model downloads once, in a few minutes, the first time it's used.
 - Flutter 3.41 / Dart 3.11 to build
 
 ## Build and run

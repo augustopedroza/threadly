@@ -81,10 +81,9 @@ class ConversationNotificationListener : NotificationListenerService() {
         if (gmId.isEmpty()) {
             gmId = convos.optJSONObject(id)?.optString("gmId").orEmpty()
         }
-        // The last-message preview. This is the only message *content* Threadly
-        // keeps, and it comes straight from the notification (so it works for RCS
-        // too — no message store is read). If this notification carries no text
-        // (e.g. a collapsed "N new messages" summary), keep whatever we last had.
+        // The last-message preview, straight from the notification (so it works
+        // for RCS too — no message store is read). If this notification carries
+        // no text (e.g. a collapsed "N new messages" summary), keep what we had.
         var preview = parsePreview(extras)
         if (preview.isEmpty()) {
             preview = convos.optJSONObject(id)?.optString("preview").orEmpty()
@@ -97,6 +96,44 @@ class ConversationNotificationListener : NotificationListenerService() {
             .put("gmId", gmId)
         convos.put(id, entry)
         store.edit().putString(KEY_CONVOS, convos.toString()).apply()
+        rememberRecent(this, id, extras)
+    }
+
+    /**
+     * Merge this notification's bundled MessagingStyle history into the
+     * conversation's small rolling buffer of recent messages — the on-device
+     * input for organizing suggestions ([ConversationSuggester]). Each notification
+     * re-bundles recent messages, so entries dedupe on (time, text). Only the
+     * newest [RECENT_MAX] are kept, in their own prefs file, which (like all
+     * prefs) is outside the auto-backup include list: they never leave the
+     * phone.
+     */
+    @Suppress("DEPRECATION")
+    private fun rememberRecent(ctx: Context, id: String, extras: Bundle) {
+        val incoming = extras.getParcelableArray("android.messages")?.mapNotNull { m ->
+            val b = m as? Bundle ?: return@mapNotNull null
+            val text = b.getCharSequence("text")?.toString()?.trim().orEmpty()
+            if (text.isEmpty()) return@mapNotNull null
+            // A null sender is the user themselves (e.g. an inline reply).
+            val sender = b.getCharSequence("sender")?.toString()?.trim()
+            JSONObject()
+                .put("t", b.getLong("time", 0L))
+                .put("s", if (sender.isNullOrEmpty()) "Me" else sender)
+                .put("x", text)
+        }.orEmpty()
+        if (incoming.isEmpty()) return
+        val store = recentPrefs(ctx)
+        val all = JSONObject(store.getString(KEY_RECENT, "{}") ?: "{}")
+        val merged = LinkedHashMap<String, JSONObject>()
+        val existing = all.optJSONArray(id)
+        for (i in 0 until (existing?.length() ?: 0)) {
+            val e = existing!!.getJSONObject(i)
+            merged["${e.optLong("t")}|${e.optString("x")}"] = e
+        }
+        for (e in incoming) merged["${e.optLong("t")}|${e.optString("x")}"] = e
+        val kept = merged.values.sortedBy { it.optLong("t") }.takeLast(RECENT_MAX)
+        all.put(id, org.json.JSONArray(kept))
+        store.edit().putString(KEY_RECENT, all.toString()).apply()
     }
 
     /**
@@ -166,6 +203,9 @@ class ConversationNotificationListener : NotificationListenerService() {
         private const val PREFS = "threadly_notifications"
         private const val KEY_CONVOS = "conversations"
         private const val KEY_ACTIVE = "active"
+        private const val RECENT_PREFS = "threadly_recent"
+        private const val KEY_RECENT = "recent"
+        private const val RECENT_MAX = 10
 
         /** Ids of conversations with a currently-active (= unread) notification. */
         private val activeIds = HashSet<String>()
@@ -178,6 +218,35 @@ class ConversationNotificationListener : NotificationListenerService() {
 
         private fun prefs(ctx: Context) =
             ctx.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
+
+        private fun recentPrefs(ctx: Context) =
+            ctx.getSharedPreferences(RECENT_PREFS, Context.MODE_PRIVATE)
+
+        /**
+         * The conversation's recent messages, oldest first, as (sender, text) —
+         * see [rememberRecent]. Falls back to the stored preview alone when no
+         * bundle has been seen yet (conversations from before this existed).
+         */
+        fun recentMessages(ctx: Context, id: String): List<Pair<String, String>> {
+            val all = JSONObject(recentPrefs(ctx).getString(KEY_RECENT, "{}") ?: "{}")
+            val arr = all.optJSONArray(id)
+            if (arr != null && arr.length() > 0) {
+                return (0 until arr.length()).map {
+                    val e = arr.getJSONObject(it)
+                    e.optString("s") to e.optString("x")
+                }
+            }
+            val convos = JSONObject(prefs(ctx).getString(KEY_CONVOS, "{}") ?: "{}")
+            val preview = convos.optJSONObject(id)?.optString("preview").orEmpty()
+            return if (preview.isEmpty()) emptyList() else listOf("" to preview)
+        }
+
+        /** Newest-message marker for [id], so suggestions can be cached until
+         *  something new arrives. */
+        fun lastActivity(ctx: Context, id: String): Long {
+            val convos = JSONObject(prefs(ctx).getString(KEY_CONVOS, "{}") ?: "{}")
+            return convos.optJSONObject(id)?.optLong("ts") ?: 0L
+        }
 
         /** A stable per-conversation id: Google Messages uses the tag. */
         private fun conversationId(sbn: StatusBarNotification): String? =
@@ -272,6 +341,10 @@ class ConversationNotificationListener : NotificationListenerService() {
                 .putString(KEY_CONVOS, convos.toString())
                 .putStringSet(KEY_ACTIVE, HashSet(activeIds))
                 .apply()
+            val recent = recentPrefs(ctx)
+            val all = JSONObject(recent.getString(KEY_RECENT, "{}") ?: "{}")
+            all.remove(id)
+            recent.edit().putString(KEY_RECENT, all.toString()).apply()
         }
 
         /** Open Google Messages (its inbox) as a last resort. */

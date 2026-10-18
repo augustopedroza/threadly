@@ -8,13 +8,16 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 user's existing texts. It learns which conversations exist and when they last got a message, keeps a
 one-line **last-message preview** for each, lets the user **organize** them (categories, custom
 nicknames, colors, notes, reminders, group rosters), then **hands off to Google Messages** for all reading and
-sending. It also reads contact names/photos (read-only) to show them over raw numbers. The pitch:
-organize here, read/send in the app you already use.
+sending. It also reads contact names/photos (read-only) to show them over raw numbers, and offers
+**on-device AI suggestions** (nickname, note, category, save-as-contact) that the user confirms. The
+pitch: organize here, read/send in the app you already use.
 
-The **only** message content Threadly keeps is that last-message preview, and it comes straight from
-the Google Messages **notification** (never a message store), so it works across SMS/MMS/RCS alike. It
-does not read message *history* or thread bodies. Currently **Android-only**; iOS is not viable for
-the core features (see "The defining constraint").
+The message content Threadly keeps is that last-message preview plus a rolling **buffer of the last
+10 messages per conversation**, the input for suggestions. Both come straight from the Google Messages
+**notification** (never a message store), so they work across SMS/MMS/RCS alike; both stay on the
+device (prefs aren't in the backup include list, and there's no network permission). It never reads
+the full message *history*. Currently **Android-only**; iOS is not viable for the core features (see
+"The defining constraint").
 
 ## The defining constraint (read before changing data/platform code)
 
@@ -97,12 +100,15 @@ Mainline (notification-driven) pieces:
   text, read from the notification (`android.messages` newest entry, else `EXTRA_TEXT`); a collapsed
   "N new messages" summary keeps the prior preview. `gmId` is GM's conversation id (the
   `shortcutId`, else parsed from the tag) that `launch(id)` turns into an exact-thread intent — see
-  the constraint section. Detects a group via GM's group flag / conversation title /
+  the constraint section. Also merges each notification's bundled `android.messages` into a
+  per-conversation buffer of the last 10 `{time, sender, text}` (deduped on time+text; null sender =
+  "Me") in its own prefs file `threadly_recent` — the suggestions' input (`recentMessages`), cleared
+  by `forget`. Detects a group via GM's group flag / conversation title /
   multiple distinct senders. Exposes `conversationsJson`, `launch(id)`, `forget(id)`,
   `openMessagesApp` over a `MethodChannel("threadly/notifications")` (wired in `MainActivity.kt`).
 - `lib/data/notifications.dart` — `NotificationConversationsService` (channel wrapper) +
   `Conversation` model `{id, title, lastActivity, unread, isGroup, preview}`. The `preview` is the
-  only message content in the app; there is no message *history*.
+  only message content the Dart side sees; the 10-message buffer stays native.
 - `lib/ui/conversations_screen.dart` — `ConversationsScreen`, the **home** (set in `main.dart`).
   Permission onboarding; list sorted by recency with avatars, last-message preview, unread dot,
   nickname/note/category; tabs (All + categories); search (name/nickname/note/category — *not* the
@@ -118,6 +124,13 @@ Mainline (notification-driven) pieces:
   handoff to a raw-number 1:1 (no contact, no nickname), returning to Threadly shows a **mapping
   prompt** (`_queueMappingPrompt` → resume) offering the organize sheet; "don't ask" declines are
   in-memory (per session). Groups deliberately get no such prompt — see the constraint note below.
+  If the conversation is **unorganized** (no nickname, note, or category) and the on-device model has
+  a suggestion, `_offerSuggestion` replaces those prompts (one prompt per return): editable nickname
+  / note, an "Add to <category>" checkbox, "Save <name> to contacts" for raw numbers, Not now
+  (session) / Don't suggest for this one (permanent, native). The organize sheet always shows
+  tap-to-apply suggestion chips (`_suggestionChips`, `force: true`); its request starts once in
+  `_organize`, not in the builder. `setAnnotation` replaces the whole row, so saves carry over the
+  other fields. A raw-number 1:1 shows its contact name once saved (`_displayTitle`).
   Swipe-forget clears the conversation's annotation, memberships, reminder, and saved roster.
 - `lib/ui/new_group_screen.dart` — pick people (`lib/ui/people_picker.dart`, a searchable
   multi-select) + optional name/category → `launchGroupText` + store a
@@ -140,6 +153,23 @@ Mainline (notification-driven) pieces:
   cancelled on swipe-forget. Requires core-library desugaring (see `android/app/build.gradle.kts`).
 - `lib/messaging.dart` — the handoff: `openSmsCompose(recipients, {body})`; `launchGroupText(context,
   recipients)` warns if `recipients.length > kGroupTextWarnLimit` (20).
+- `android/.../ConversationSuggester.kt` + `lib/data/suggestions.dart`
+  (`MethodChannel("threadly/suggest")`: `suggest`, `dismiss`, `saveContact`) — on-device suggestions
+  via **Gemini Nano / ML Kit GenAI Prompt API** (`com.google.mlkit:genai-prompt`, hence `minSdk 26`).
+  Free, offline, no network permission. From the conversation's recent messages it proposes
+  `{nickname, note, category}`: nickname = a **group's main topic**, or for a **raw-number 1:1 the
+  person's own name** when they state it (also offered as a contact); none for a saved contact (its
+  name already shows). Note = what the chat is about (2-10 words). Category = one of the user's
+  existing categories it isn't in (never a new one). The prompt is a literal labeled template plus a
+  per-kind example (Nano drops labels otherwise; the parser also reads 3 bare lines positionally,
+  and treats "NONE - NONE" etc. as empty). Results are cached in memory per (last activity,
+  wantName, categories). AICore realities: inference **only for the app on screen**
+  (`BACKGROUND_USE_BLOCKED`, so never from the listener), per-app quota (`BUSY`/battery), supported
+  devices only (Pixel 9/10 and some flagships), and a one-time model download (~3 min on the test
+  Pixel 10 Pro Fold) triggered by the first call when `DOWNLOADABLE`. Every failure = no suggestion.
+  "Save to contacts" opens the system `Intents.Insert` editor prefilled — the user saves (and picks
+  the account) there, so Threadly stays **read-only on contacts** (no WRITE_CONTACTS). Logs (tag
+  `ThreadlySuggest`) carry ids/status/errors only — never message text.
 - `android/.../ReturnChip.kt` + `lib/data/return_chip.dart` (`MethodChannel("threadly/return_chip")`)
   — the optional **"back to Threadly" chip**: a draggable `TYPE_APPLICATION_OVERLAY` pill drawn over
   Google Messages after every handoff (`_handedOff` in the home screen, and `openSmsCompose`). Exists
@@ -201,7 +231,11 @@ recency, categories, search, swipe-delete, and the handoff are all testable ther
 via `adb shell cmd notification allow_listener com.augusto.group_chat/com.augusto.group_chat.ConversationNotificationListener`.
 Real **group detection** and **contact photos** need a real device (the emulator's synthetic
 notifications/contacts lack those signals). The app's SQLite-backed organizing works fully on an
-emulator, no account needed.
+emulator, no account needed. **AI suggestions** need a Gemini Nano device (not the emulator): test
+with the phone **unlocked and Threadly on screen** (a locked phone yields `BACKGROUND_USE_BLOCKED`),
+pause a few seconds between long-presses when batch-testing (logd's chatty filter drops repeated
+`ThreadlySuggest` lines), and remember a fresh install's buffer is empty, so suggestions start from
+the one-line preview until new messages arrive.
 
 **Android 15 redaction trap (adb-granted access only):** after granting via `cmd notification
 allow_listener`, the listener receives *redacted* notifications — empty `EXTRA_TITLE`, so `record()`

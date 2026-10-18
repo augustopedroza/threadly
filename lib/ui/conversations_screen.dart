@@ -5,6 +5,7 @@ import '../data/notifications.dart';
 import '../data/organizer_store.dart';
 import '../data/reminders.dart';
 import '../data/return_chip.dart';
+import '../data/suggestions.dart';
 import '../format.dart';
 import '../messaging.dart';
 import '../models/category.dart';
@@ -32,6 +33,7 @@ class _ConversationsScreenState extends State<ConversationsScreen>
   final ContactsService _contactsService = ContactsService();
   final ReminderService _reminders = ReminderService();
   final ReturnChipService _chip = ReturnChipService();
+  final SuggestionService _suggest = SuggestionService();
 
   /// Whether the "back to Threadly" chip is set up (permission + preference).
   ReturnChipStatus? _chipStatus;
@@ -82,6 +84,10 @@ class _ConversationsScreenState extends State<ConversationsScreen>
   /// Conversations the user said "don't ask" for. In-memory: asking again
   /// next session is fine, nagging within one is not.
   final Set<String> _mappingPromptDeclined = {};
+
+  /// Conversations whose suggestion the user put off ("Not now") this
+  /// session; "Don't suggest" is remembered natively for good.
+  final Set<String> _suggestDeferred = {};
 
   bool _searching = false;
   String _query = '';
@@ -138,19 +144,210 @@ class _ConversationsScreenState extends State<ConversationsScreen>
       // Back from Messages (chip or Back alike): show where they were. Any
       // prompt waits for the blink so it doesn't cover it.
       _blink(fromHandoff.id);
-      final chip = _chipStatus;
-      final offerChip = chip != null && !chip.active && !chip.nudged;
-      if (pending == null && !offerChip) return;
+      // Ask the on-device model meanwhile (it only runs while Threadly is on
+      // screen, so not before now). Fresh copy if the conversation is listed.
+      final c = _conversations
+              .where((x) => x.id == fromHandoff.id)
+              .firstOrNull ??
+          fromHandoff;
+      final suggestion = _wantsReturnSuggestion(c)
+          ? _suggestFor(c)
+          : Future<Suggestion?>.value();
       await Future<void>.delayed(_Blink.duration);
+      final s = await suggestion;
       if (!mounted) return;
-      if (pending != null) {
+      // One prompt per return, in this order: a suggestion (which also covers
+      // the raw-number nickname offer), the plain nickname offer, then the
+      // one-time chip offer.
+      if (s != null) {
+        _offerSuggestion(c, s);
+      } else if (pending != null) {
         _offerNickname(pending);
       } else {
-        // One prompt per return: the nickname offer wins; the chip offer
-        // waits for a later trip.
-        _maybeOfferReturnChip();
+        final chip = _chipStatus;
+        if (chip != null && !chip.active && !chip.nudged) {
+          _maybeOfferReturnChip();
+        }
       }
     });
+  }
+
+  /// The title to show: a raw-number 1:1 shows its contact name once saved
+  /// (the stored title only updates with Google Messages' next notification).
+  String _displayTitle(Conversation c) =>
+      c.isGroup ? c.title : (_contacts.nameForPhone(c.title) ?? c.title);
+
+  /// A 1:1 whose title is just a phone number (not a saved contact).
+  bool _isRawNumber(Conversation c) =>
+      !c.isGroup &&
+      _numberFromTitle(c.title) != null &&
+      _contacts.nameForPhone(c.title) == null;
+
+  /// Only conversations not organized at all yet (no nickname, note, or
+  /// category) get a return prompt, so filed ones are never nagged. The
+  /// organize sheet always shows suggestions.
+  bool _wantsReturnSuggestion(Conversation c) {
+    final ann = _annotations[c.id];
+    return !_suggestDeferred.contains(c.id) &&
+        ann?.name?.isNotEmpty != true &&
+        ann?.note?.isNotEmpty != true &&
+        _categoryIdsFor(c).isEmpty;
+  }
+
+  Future<Suggestion?> _suggestFor(Conversation c, {bool force = false}) {
+    final mine = _categoryIdsFor(c);
+    return _suggest.suggest(
+      c,
+      categories: [
+        for (final cat in _categories)
+          if (!mine.contains(cat.id)) cat.name,
+      ],
+      wantName: _isRawNumber(c),
+      force: force,
+    );
+  }
+
+  /// Offer what the model suggested for [c], to accept, edit, or skip.
+  /// Nothing is saved without a tap.
+  Future<void> _offerSuggestion(Conversation c, Suggestion s) async {
+    final number = _isRawNumber(c) ? _numberFromTitle(c.title) : null;
+    // A raw number's nickname is the person's name: offer it as a contact.
+    final person = number != null ? s.nickname : null;
+    final category = _categories
+        .where((cat) => cat.name == s.category)
+        .firstOrNull;
+    // Nickname: a group's topic or a person's name. Note: what it's about.
+    final nickname = TextEditingController(text: s.nickname ?? '');
+    final note = TextEditingController(text: s.note ?? '');
+    var addCategory = category != null;
+    final choice = await showModalBottomSheet<String>(
+      context: context,
+      isScrollControlled: true,
+      showDragHandle: true,
+      builder: (ctx) => StatefulBuilder(
+        builder: (ctx, setSheet) => Padding(
+          padding: EdgeInsets.fromLTRB(
+              24, 0, 24, MediaQuery.of(ctx).viewInsets.bottom + 8),
+          child: SafeArea(
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Row(
+                  children: [
+                    Icon(Icons.auto_awesome,
+                        size: 20, color: Theme.of(ctx).colorScheme.primary),
+                    const SizedBox(width: 8),
+                    Expanded(
+                      child: Text(
+                        'Organize “${c.title}”?',
+                        style: Theme.of(ctx).textTheme.titleMedium,
+                        maxLines: 1,
+                        overflow: TextOverflow.ellipsis,
+                      ),
+                    ),
+                  ],
+                ),
+                const SizedBox(height: 4),
+                Text(
+                  'Suggested from recent messages, on this phone.',
+                  style: Theme.of(ctx).textTheme.bodySmall,
+                ),
+                if (person != null) ...[
+                  const SizedBox(height: 16),
+                  Text('This looks like $person.'),
+                  const SizedBox(height: 8),
+                  OutlinedButton.icon(
+                    onPressed: () => Navigator.pop(ctx, 'contact'),
+                    icon: const Icon(Icons.person_add_alt_1_outlined),
+                    label: Text('Save $person to contacts'),
+                  ),
+                ],
+                if (s.nickname != null) ...[
+                  const SizedBox(height: 16),
+                  TextField(
+                    controller: nickname,
+                    decoration: const InputDecoration(
+                      labelText: 'Nickname (shown as a subtitle)',
+                      border: OutlineInputBorder(),
+                    ),
+                  ),
+                ],
+                if (s.note != null) ...[
+                  const SizedBox(height: 16),
+                  TextField(
+                    controller: note,
+                    decoration: const InputDecoration(
+                      labelText: 'Note',
+                      border: OutlineInputBorder(),
+                    ),
+                  ),
+                ],
+                if (category != null)
+                  CheckboxListTile(
+                    contentPadding: EdgeInsets.zero,
+                    value: addCategory,
+                    onChanged: (v) => setSheet(() => addCategory = v ?? false),
+                    secondary: CircleAvatar(
+                        radius: 6, backgroundColor: Color(category.color)),
+                    title: Text('Add to ${category.name}'),
+                  ),
+                const SizedBox(height: 8),
+                SizedBox(
+                  width: double.infinity,
+                  child: FilledButton(
+                    onPressed: () => Navigator.pop(ctx, 'save'),
+                    child: const Text('Save'),
+                  ),
+                ),
+                Row(
+                  children: [
+                    TextButton(
+                      onPressed: () => Navigator.pop(ctx, 'later'),
+                      child: const Text('Not now'),
+                    ),
+                    const Spacer(),
+                    TextButton(
+                      onPressed: () => Navigator.pop(ctx, 'never'),
+                      child: const Text('Don’t suggest for this one'),
+                    ),
+                  ],
+                ),
+              ],
+            ),
+          ),
+        ),
+      ),
+    );
+    final name = nickname.text.trim();
+    final noteText = note.text.trim();
+    nickname.dispose();
+    note.dispose();
+    if (!mounted) return;
+    switch (choice) {
+      case 'contact':
+        // The contacts app takes it from here; the name shows once saved
+        // (contacts reload when Threadly resumes).
+        await _suggest.saveContact(person!, number!);
+      case 'save':
+        final ann = _annotations[c.id];
+        if (name.isNotEmpty || noteText.isNotEmpty) {
+          // Keep the rest of the annotation: setAnnotation replaces the row.
+          await _store.setAnnotation(c.id,
+              name: name.isNotEmpty ? name : ann?.name,
+              color: ann?.color,
+              note: noteText.isNotEmpty ? noteText : ann?.note,
+              remindAtMs: ann?.remindAtMs);
+        }
+        if (addCategory && category != null) {
+          await _store.setMembership(category.id, c.id, true);
+        }
+        _load();
+      case 'never':
+        await _suggest.dismiss(c.id);
+      default: // "Not now" or dismissed: ask again next session.
+        _suggestDeferred.add(c.id);
+    }
   }
 
   /// Pulse [id]'s row (see [_Blink]); the trigger clears once it's done so a
@@ -666,7 +863,7 @@ class _ConversationsScreenState extends State<ConversationsScreen>
         children: [
           Expanded(
             child: Text(
-              c.title.isEmpty ? 'Unknown' : c.title,
+              c.title.isEmpty ? 'Unknown' : _displayTitle(c),
               maxLines: 1,
               overflow: TextOverflow.ellipsis,
               style: unread
@@ -847,7 +1044,8 @@ class _ConversationsScreenState extends State<ConversationsScreen>
   /// memorizing numbers). Groups get no prompt (see [_mappingPromptPending]).
   void _queueMappingPrompt(Conversation c) {
     if (c.isGroup || _mappingPromptDeclined.contains(c.id)) return;
-    final hasContact = _contacts.phoneForName(c.title) != null;
+    final hasContact = _contacts.phoneForName(c.title) != null ||
+        _contacts.nameForPhone(c.title) != null;
     final hasNickname = _annotations[c.id]?.name?.isNotEmpty == true;
     if (!hasContact && !hasNickname) _mappingPromptPending = c;
   }
@@ -1051,6 +1249,10 @@ class _ConversationsScreenState extends State<ConversationsScreen>
   }
 
   Future<void> _organize(Conversation c) async {
+    // Ask once, up front: the sheet's builder can run more than once, and
+    // each call would be another on-device inference. The user opened it
+    // themselves, so suggest even after "don't suggest" on a return prompt.
+    final suggestion = _suggestFor(c, force: true);
     await showModalBottomSheet<void>(
       context: context,
       isScrollControlled: true,
@@ -1061,6 +1263,9 @@ class _ConversationsScreenState extends State<ConversationsScreen>
         categories: _categories,
         selectedCategoryIds: _categoryIdsFor(c),
         annotation: _annotations[c.id],
+        suggestion: suggestion,
+        rawNumber: _isRawNumber(c) ? _numberFromTitle(c.title) : null,
+        suggestService: _suggest,
       ),
     );
     // Toggles/notes persist live; reload to reflect them (also covers dismiss
@@ -1184,12 +1389,22 @@ class _OrganizeSheet extends StatefulWidget {
   final Set<int> selectedCategoryIds;
   final ConversationAnnotation? annotation;
 
+  /// On-device suggestion, shown as tap-to-apply chips once it arrives.
+  final Future<Suggestion?> suggestion;
+
+  /// The number, when this is a raw-number 1:1 (enables "save to contacts").
+  final String? rawNumber;
+  final SuggestionService suggestService;
+
   const _OrganizeSheet({
     required this.store,
     required this.conversation,
     required this.categories,
     required this.selectedCategoryIds,
     required this.annotation,
+    required this.suggestion,
+    required this.rawNumber,
+    required this.suggestService,
   });
 
   @override
@@ -1208,6 +1423,62 @@ class _OrganizeSheetState extends State<_OrganizeSheet> {
   late List<Category> _categories = widget.categories;
   late final Set<int> _selected = {...widget.selectedCategoryIds};
   final ReminderService _reminders = ReminderService();
+  Suggestion? _suggestion;
+
+  @override
+  void initState() {
+    super.initState();
+    widget.suggestion.then((s) {
+      if (mounted) setState(() => _suggestion = s);
+    });
+  }
+
+  /// Tap-to-apply chips for whatever the model suggested that isn't already
+  /// set. Applying fills the field / ticks the category; text fields still
+  /// need Save, like any edit here. Nickname = a group's topic or a raw
+  /// number's person name; the note = what the chat is about.
+  Widget _suggestionChips() {
+    final s = _suggestion;
+    if (s == null) return const SizedBox.shrink();
+    final nickname = s.nickname;
+    final note = s.note;
+    final category =
+        _categories.where((c) => c.name == s.category).firstOrNull;
+    final person = widget.rawNumber != null ? nickname : null;
+    final chips = <Widget>[
+      if (nickname != null && _name.text.trim() != nickname)
+        ActionChip(
+          avatar: const Icon(Icons.auto_awesome, size: 18),
+          label: Text('Nickname: $nickname'),
+          onPressed: () => setState(() => _name.text = nickname),
+        ),
+      if (note != null && _note.text.trim().isEmpty)
+        ActionChip(
+          avatar: const Icon(Icons.auto_awesome, size: 18),
+          label: Text('Note: $note'),
+          onPressed: () => setState(() => _note.text = note),
+        ),
+      if (category != null && !_selected.contains(category.id))
+        ActionChip(
+          avatar: CircleAvatar(
+              radius: 6, backgroundColor: Color(category.color)),
+          label: Text('Add to ${category.name}'),
+          onPressed: () => _toggleCategory(category, true),
+        ),
+      if (person != null)
+        ActionChip(
+          avatar: const Icon(Icons.person_add_alt_1_outlined, size: 18),
+          label: Text('Save $person to contacts'),
+          onPressed: () =>
+              widget.suggestService.saveContact(person, widget.rawNumber!),
+        ),
+    ];
+    if (chips.isEmpty) return const SizedBox.shrink();
+    return Padding(
+      padding: const EdgeInsets.only(top: 8),
+      child: Wrap(spacing: 8, runSpacing: 4, children: chips),
+    );
+  }
 
   @override
   void dispose() {
@@ -1354,6 +1625,7 @@ class _OrganizeSheetState extends State<_OrganizeSheet> {
                 isDense: true,
               ),
             ),
+            _suggestionChips(),
             const SizedBox(height: 12),
             TextField(
               controller: _note,
