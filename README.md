@@ -82,6 +82,19 @@ reminders, recent messages) stays on the device.
   model downloads once, in a few minutes, the first time it's used.
 - Flutter 3.41 / Dart 3.11 to build
 
+## Download
+
+Every push to `main` builds a signed APK on GitHub Actions: open the run under
+**Actions → Android** and download **threadly-apk** from its Artifacts.
+Tagged versions (`v1.2.0`) are also published under **Releases** with the APK
+attached. Each build installs over the previous one.
+
+To cut a release:
+
+```bash
+git tag v1.2.0 && git push origin v1.2.0
+```
+
 ## Build and run
 
 ```bash

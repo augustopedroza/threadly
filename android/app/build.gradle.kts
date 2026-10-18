@@ -1,9 +1,26 @@
+import java.util.Properties
+
 plugins {
     id("com.android.application")
     id("kotlin-android")
     // The Flutter Gradle Plugin must be applied after the Android and Kotlin Gradle plugins.
     id("dev.flutter.flutter-gradle-plugin")
 }
+
+// Release signing key: android/key.properties (git-ignored), written locally
+// by hand and in CI from repository secrets — see CLAUDE.md "Releases".
+val keystoreProperties = Properties().apply {
+    val f = rootProject.file("key.properties")
+    if (f.exists()) f.inputStream().use { load(it) }
+}
+
+// versionCode = commits on the checked-out branch, so a build of any newer
+// commit (local or CI) installs over an older one. Falls back to pubspec's
+// build number when git isn't available.
+val gitCommitCount: Int? = runCatching {
+    providers.exec { commandLine("git", "rev-list", "--count", "HEAD") }
+        .standardOutput.asText.get().trim().toInt()
+}.getOrNull()
 
 android {
     namespace = "com.augusto.group_chat"
@@ -29,15 +46,31 @@ android {
         // 26: ML Kit's GenAI Prompt API (on-device organizing suggestions).
         minSdk = 26
         targetSdk = flutter.targetSdkVersion
-        versionCode = flutter.versionCode
+        versionCode = gitCommitCount ?: flutter.versionCode
         versionName = flutter.versionName
+    }
+
+    signingConfigs {
+        create("release") {
+            if (!keystoreProperties.isEmpty) {
+                storeFile = file(keystoreProperties.getProperty("storeFile"))
+                storePassword = keystoreProperties.getProperty("storePassword")
+                keyAlias = keystoreProperties.getProperty("keyAlias")
+                keyPassword = keystoreProperties.getProperty("keyPassword")
+            }
+        }
     }
 
     buildTypes {
         release {
-            // TODO: Add your own signing config for the release build.
-            // Signing with the debug keys for now, so `flutter run --release` works.
-            signingConfig = signingConfigs.getByName("debug")
+            // The release key when key.properties exists; otherwise the debug
+            // key, so a fresh checkout still builds (but can't update an
+            // installed release build — the signatures differ).
+            signingConfig = if (keystoreProperties.isEmpty) {
+                signingConfigs.getByName("debug")
+            } else {
+                signingConfigs.getByName("release")
+            }
         }
     }
 }

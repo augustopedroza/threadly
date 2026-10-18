@@ -243,6 +243,25 @@ flutter run                     # run on a connected device/emulator
 flutter build apk --debug       # verify the full Android native stack compiles
 ```
 
+## Releases
+
+- **Signing key**: `~/keystores/threadly-release.jks` on the dev Mac (PKCS12, alias `threadly`, RSA
+  4096, cert SHA-256 `56:47:5F:3E:…:57:16:5C`, valid to 2054). Its password lives only in
+  `android/key.properties` (git-ignored) and in the repo's GitHub secrets. **Back the .jks and its
+  password up outside this Mac** — without them no future build can install over this app.
+- `android/app/build.gradle.kts`: release builds sign with that key whenever `key.properties`
+  exists, else fall back to the debug key (a fresh checkout still builds, but its APK can't update
+  an installed release). **versionCode = `git rev-list --count HEAD`**, so any newer commit's build
+  installs over an older one, local or CI (versionName stays pubspec's, or the tag on releases).
+- **CI** (`.github/workflows/android.yml`): every push to `main` runs analyze + tests and uploads
+  a signed APK as a run artifact; pushing a tag `vX.Y.Z` also creates a GitHub Release with the
+  APK. It writes `key.properties` from secrets `THREADLY_KEYSTORE_BASE64`,
+  `THREADLY_KEYSTORE_PASSWORD`, `THREADLY_KEY_ALIAS`, `THREADLY_KEY_PASSWORD`. Pushing workflow
+  files needs a token with the `workflow` scope (`gh auth refresh -s workflow`).
+- Installs signed with a *different* key (the old debug-signed builds) can't be updated in place:
+  that switch is an uninstall + reinstall, and Android's backup won't restore across a key change,
+  so app data has to be carried over by hand (debuggable builds + `run-as`).
+
 ## Verification reality
 
 `flutter analyze`, `flutter test`, and the debug APK build are the CI-equivalent checks and must
