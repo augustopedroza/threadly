@@ -63,6 +63,16 @@ class MainActivity : FlutterActivity() {
                         call.argument<String>("id")?.let { ConversationSuggester.dismiss(this, it) }
                         result.success(null)
                     }
+                    "needsReply" -> scope.launch {
+                        result.success(
+                            ConversationSuggester.needsReply(
+                                this@MainActivity,
+                                call.argument<String>("id").orEmpty(),
+                                call.argument<String>("title").orEmpty(),
+                                call.argument<Boolean>("isGroup") == true,
+                            )
+                        )
+                    }
                     "interpret" -> scope.launch {
                         result.success(
                             ConversationSuggester.interpret(

@@ -21,6 +21,11 @@ want to read or reply.
   tomorrow without opening the app.
 - **Reminders in one place**: the alarm icon lists every reminder, due and
   upcoming, with what each is for. Open, reschedule, or clear from there.
+- **To reply**: a tab of recent messages that look like they need an answer
+  from you (the on-device AI skips "ok thanks" and reactions). Threadly can't
+  see what you send from Google Messages, so swipe a chat left when it's
+  handled; replying through Threadly clears it too, and a new message brings
+  it back.
 - **Open the exact thread** in Google Messages with one tap, including RCS
   group chats.
 - **Get back in one tap**: an optional floating "Threadly" button over

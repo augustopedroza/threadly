@@ -37,15 +37,18 @@ class RemindersScreen extends StatefulWidget {
 
 class _RemindersScreenState extends State<RemindersScreen> {
   Future<void> _snooze(ReminderEntry e) async {
-    final when = await pickLater(context,
-        title: 'Snooze until', current: e.when);
+    final when = await pickLater(
+      context,
+      title: 'Snooze until',
+      current: e.when,
+    );
     if (when == null || !mounted) return;
     await widget.setReminder(e.conversation, when);
     if (!mounted) return;
     setState(() {});
-    ScaffoldMessenger.of(context).showSnackBar(
-      SnackBar(content: Text('Snoozed until ${formatDue(when)}')),
-    );
+    ScaffoldMessenger.of(
+      context,
+    ).showSnackBar(SnackBar(content: Text('Snoozed until ${formatDue(when)}')));
   }
 
   Future<void> _clear(ReminderEntry e) async {
@@ -54,28 +57,34 @@ class _RemindersScreenState extends State<RemindersScreen> {
     setState(() {});
     ScaffoldMessenger.of(context)
       ..hideCurrentSnackBar()
-      ..showSnackBar(SnackBar(
-        content: Text('Reminder for ${e.title} cleared'),
-        action: SnackBarAction(
-          label: 'Undo',
-          onPressed: () async {
-            // Only restore a time still ahead; a past one has fired.
-            if (!e.when.isAfter(DateTime.now())) return;
-            await widget.setReminder(e.conversation, e.when);
-            if (mounted) setState(() {});
-          },
+      ..showSnackBar(
+        SnackBar(
+          content: Text('Reminder for ${e.title} cleared'),
+          action: SnackBarAction(
+            label: 'Undo',
+            onPressed: () async {
+              // Restore it as it was — a past one comes back as due (nothing
+              // is re-scheduled for a time that's gone).
+              await widget.setReminder(e.conversation, e.when);
+              if (mounted) setState(() {});
+            },
+          ),
         ),
-      ));
+      );
   }
 
   @override
   Widget build(BuildContext context) {
     final now = DateTime.now();
     final all = widget.entries();
-    final due = [for (final e in all) if (!e.when.isAfter(now)) e]
-      ..sort((a, b) => b.when.compareTo(a.when));
-    final upcoming = [for (final e in all) if (e.when.isAfter(now)) e]
-      ..sort((a, b) => a.when.compareTo(b.when));
+    final due = [
+      for (final e in all)
+        if (!e.when.isAfter(now)) e,
+    ]..sort((a, b) => b.when.compareTo(a.when));
+    final upcoming = [
+      for (final e in all)
+        if (e.when.isAfter(now)) e,
+    ]..sort((a, b) => a.when.compareTo(b.when));
     return Scaffold(
       appBar: AppBar(title: const Text('Reminders')),
       body: all.isEmpty
@@ -105,60 +114,51 @@ class _RemindersScreenState extends State<RemindersScreen> {
   }
 
   Widget _header(String label) => Padding(
-        padding: const EdgeInsets.fromLTRB(16, 16, 16, 4),
-        child: Text(
-          label,
-          style: Theme.of(context).textTheme.labelLarge?.copyWith(
-                color: Theme.of(context).colorScheme.primary,
-              ),
-        ),
-      );
+    padding: const EdgeInsets.fromLTRB(16, 16, 16, 4),
+    child: Text(
+      label,
+      style: Theme.of(context).textTheme.labelLarge?.copyWith(
+        color: Theme.of(context).colorScheme.primary,
+      ),
+    ),
+  );
 
   Widget _row(ReminderEntry e, {required bool overdue}) {
     final theme = Theme.of(context);
     final color = overdue ? theme.colorScheme.error : theme.colorScheme.primary;
     final details = [?e.nickname, ?e.what].join(' · ');
-    return Dismissible(
-      key: ValueKey('reminder-${e.conversation.id}-${e.when.millisecondsSinceEpoch}'),
-      direction: DismissDirection.endToStart,
-      background: Container(
-        color: theme.colorScheme.secondaryContainer,
-        alignment: Alignment.centerRight,
-        padding: const EdgeInsets.symmetric(horizontal: 20),
-        child: Icon(Icons.done, color: theme.colorScheme.onSecondaryContainer),
+    // No swipe-to-clear here: a swipe from the screen edge is also
+    // Android's back gesture and was clearing reminders by accident.
+    return ListTile(
+      leading: Icon(overdue ? Icons.alarm_on : Icons.alarm, color: color),
+      title: Text(e.title, maxLines: 1, overflow: TextOverflow.ellipsis),
+      subtitle: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          if (details.isNotEmpty)
+            Text(details, maxLines: 2, overflow: TextOverflow.ellipsis),
+          Text(
+            overdue ? 'Was due ${formatDue(e.when)}' : formatDue(e.when),
+            style: theme.textTheme.labelSmall?.copyWith(color: color),
+          ),
+        ],
       ),
-      onDismissed: (_) => _clear(e),
-      child: ListTile(
-        leading: Icon(overdue ? Icons.alarm_on : Icons.alarm, color: color),
-        title: Text(e.title, maxLines: 1, overflow: TextOverflow.ellipsis),
-        subtitle: Column(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            if (details.isNotEmpty)
-              Text(details, maxLines: 2, overflow: TextOverflow.ellipsis),
-            Text(
-              overdue ? 'Was due ${formatDue(e.when)}' : formatDue(e.when),
-              style: theme.textTheme.labelSmall?.copyWith(color: color),
-            ),
-          ],
-        ),
-        trailing: Row(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            IconButton(
-              tooltip: 'Snooze',
-              icon: const Icon(Icons.snooze),
-              onPressed: () => _snooze(e),
-            ),
-            IconButton(
-              tooltip: overdue ? 'Done' : 'Clear',
-              icon: Icon(overdue ? Icons.done : Icons.close),
-              onPressed: () => _clear(e),
-            ),
-          ],
-        ),
-        onTap: () => widget.open(e.conversation),
+      trailing: Row(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          IconButton(
+            tooltip: 'Snooze',
+            icon: const Icon(Icons.snooze),
+            onPressed: () => _snooze(e),
+          ),
+          IconButton(
+            tooltip: overdue ? 'Done' : 'Clear',
+            icon: Icon(overdue ? Icons.done : Icons.close),
+            onPressed: () => _clear(e),
+          ),
+        ],
       ),
+      onTap: () => widget.open(e.conversation),
     );
   }
 }

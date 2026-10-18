@@ -12,6 +12,7 @@ import '../messaging.dart';
 import '../models/category.dart';
 import '../models/command.dart';
 import '../models/due_date.dart';
+import '../models/reply.dart';
 import 'category_manager_screen.dart';
 import 'later_picker.dart';
 import 'new_group_screen.dart';
@@ -78,6 +79,13 @@ class _ConversationsScreenState extends State<ConversationsScreen>
   /// conversation id -> member numbers for groups we know (created here), so we
   /// can reopen the exact group thread via the sms: deep link.
   Map<String, List<String>> _groupRecipients = const {};
+
+  /// conversation id -> "To reply" bookkeeping (done marks, AI verdicts).
+  Map<String, ReplyState> _replyStates = const {};
+
+  /// Whether the AI is working through "To reply" candidates (one pass at a
+  /// time; it only runs while Threadly is on screen).
+  bool _judging = false;
 
   /// The hard-to-map conversation we just handed off to Google Messages: a
   /// 1:1 that's only a raw number. When the user comes back — having just
@@ -593,6 +601,7 @@ class _ConversationsScreenState extends State<ConversationsScreen>
     final annotations = await _store.allAnnotations();
     final reads = await _store.allReads();
     final groupRecipients = await _store.allGroupRecipients();
+    final replyStates = await _store.allReplyStates();
     // NOTE: we deliberately do NOT build group recipients from harvested
     // senders. The notification only reveals who *sent*, never the full roster,
     // and an incomplete roster opens the wrong conversation (a 1:1 or a
@@ -618,9 +627,110 @@ class _ConversationsScreenState extends State<ConversationsScreen>
       _annotations = annotations;
       _reads = reads;
       _groupRecipients = groupRecipients;
+      _replyStates = replyStates;
       _loading = false;
       _loadedOnce = true;
     });
+    _judgeReplies();
+  }
+
+  /// Conversations in the "To reply" tab, newest first.
+  List<Conversation> _toReply() {
+    final now = DateTime.now();
+    return [
+      for (final c in _conversations)
+        if (belongsInToReply(
+          lastActivity: c.lastActivity,
+          lastFromMe: c.lastFromMe,
+          preview: c.preview,
+          state: _replyStates[c.id] ?? ReplyState.none,
+          now: now,
+        ))
+          c,
+    ];
+  }
+
+  /// Ask the on-device AI, one at a time, whether each unjudged "To reply"
+  /// candidate's newest message needs an answer; save each verdict (so a
+  /// message is judged once) and drop "no"s from the tab as they come in.
+  /// Stops when Threadly leaves the screen (AICore only serves the app on
+  /// screen) or the model can't answer; unjudged chats stay in the tab.
+  Future<void> _judgeReplies() async {
+    if (_judging) return;
+    _judging = true;
+    try {
+      for (final c in _toReply()) {
+        final state = _replyStates[c.id] ?? ReplyState.none;
+        if (!needsVerdict(lastActivity: c.lastActivity, state: state)) continue;
+        if (!mounted ||
+            WidgetsBinding.instance.lifecycleState != AppLifecycleState.resumed) {
+          return;
+        }
+        final verdict = await _suggest.needsReply(c);
+        if (verdict == null) return;
+        final at = c.lastActivity.millisecondsSinceEpoch;
+        await _store.setReplyVerdict(c.id, at, verdict);
+        if (!mounted) return;
+        setState(() => _replyStates = {
+              ..._replyStates,
+              c.id: ReplyState(
+                  doneAtMs: state.doneAtMs, verdictAtMs: at, needsReply: verdict),
+            });
+      }
+    } finally {
+      _judging = false;
+    }
+  }
+
+  /// "Done" in the To reply tab: hide [c] until a newer message arrives.
+  /// Updates state synchronously (the swiped row must leave the tree now).
+  void _markDone(Conversation c) {
+    final at = c.lastActivity.millisecondsSinceEpoch;
+    final before = _replyStates[c.id] ?? ReplyState.none;
+    setState(() => _replyStates = {
+          ..._replyStates,
+          c.id: ReplyState(
+              doneAtMs: at,
+              verdictAtMs: before.verdictAtMs,
+              needsReply: before.needsReply),
+        });
+    _store.setReplyDone(c.id, at);
+    ScaffoldMessenger.of(context)
+      ..hideCurrentSnackBar()
+      ..showSnackBar(SnackBar(
+        content: Text('${_displayTitle(c)}: done'),
+        action: SnackBarAction(
+          label: 'Undo',
+          onPressed: () {
+            _store.setReplyDone(c.id, before.doneAtMs);
+            if (mounted) {
+              setState(() => _replyStates = {..._replyStates, c.id: before});
+            }
+          },
+        ),
+      ));
+  }
+
+  /// The user replied to [c] through Threadly (Ask Threadly opened the
+  /// draft): it's handled, as far as "To reply" is concerned.
+  Future<void> _markReplied(Conversation c) async {
+    final at = c.lastActivity.millisecondsSinceEpoch;
+    await _store.setReplyDone(c.id, at);
+    if (!mounted) return;
+    final before = _replyStates[c.id] ?? ReplyState.none;
+    setState(() => _replyStates = {
+          ..._replyStates,
+          c.id: ReplyState(
+              doneAtMs: at,
+              verdictAtMs: before.verdictAtMs,
+              needsReply: before.needsReply),
+        });
+  }
+
+  /// "Forget conversation" from its sheet (no longer a swipe: it collided
+  /// with Android's back gesture).
+  Future<void> _forgetFromSheet(Conversation c) async {
+    if (await _confirmForget(c)) await _forget(c);
   }
 
   /// Match pending group names/categories (set in the new-group composer) to
@@ -685,7 +795,12 @@ class _ConversationsScreenState extends State<ConversationsScreen>
 
   @override
   Widget build(BuildContext context) {
-    final tabs = ['All', ..._categories.map((c) => c.name)];
+    final toReply = _toReply().length;
+    final tabs = [
+      'All',
+      toReply > 0 ? 'To reply ($toReply)' : 'To reply',
+      ..._categories.map((c) => c.name),
+    ];
     return DefaultTabController(
       key: ValueKey(_categories.map((c) => c.id).join(',')),
       length: tabs.length,
@@ -813,8 +928,30 @@ class _ConversationsScreenState extends State<ConversationsScreen>
     return TabBarView(
       children: [
         _tab(_conversations, null),
+        _replyTab(),
         for (final c in _categories) _tab(_forCategory(c.id), c.id),
       ],
+    );
+  }
+
+  /// "To reply": recent conversations whose newest message (from someone
+  /// else) looks like it needs an answer. Swipe left marks one done.
+  Widget _replyTab() {
+    final convos = _toReply();
+    if (convos.isEmpty) {
+      return const Center(
+        child: Padding(
+          padding: EdgeInsets.all(24),
+          child: Text(
+            'Nothing waiting on you.\n\nRecent messages that look like they '
+            'need an answer show up here. Swipe one left when it’s handled.',
+            textAlign: TextAlign.center,
+          ),
+        ),
+      );
+    }
+    return ListView(
+      children: [for (final c in convos) _tile(c, replyTab: true)],
     );
   }
 
@@ -918,7 +1055,7 @@ class _ConversationsScreenState extends State<ConversationsScreen>
     );
   }
 
-  Widget _tile(Conversation c) {
+  Widget _tile(Conversation c, {bool replyTab = false}) {
     final ann = _annotations[c.id];
     final photo = c.isGroup ? null : _contacts.photoForTitle(c.title);
     final unread = _isUnread(c);
@@ -978,7 +1115,17 @@ class _ConversationsScreenState extends State<ConversationsScreen>
       trigger: c.id == _blinkId ? _blinkSeq : 0,
       child: Dismissible(
       key: ValueKey('conv-${c.id}'),
-      // Right: save for later (the row stays). Left: forget.
+      // Right: save for later (the row stays). Left, in "To reply" only:
+      // done. No destructive swipe — a left swipe from the edge is also
+      // Android's back gesture; forgetting lives in the sheet. A long drag
+      // is needed so a short edge gesture doesn't trigger either.
+      direction: replyTab
+          ? DismissDirection.horizontal
+          : DismissDirection.startToEnd,
+      dismissThresholds: const {
+        DismissDirection.startToEnd: 0.5,
+        DismissDirection.endToStart: 0.5,
+      },
       background: Container(
         color: Theme.of(context).colorScheme.primaryContainer,
         alignment: Alignment.centerLeft,
@@ -996,20 +1143,29 @@ class _ConversationsScreenState extends State<ConversationsScreen>
         ),
       ),
       secondaryBackground: Container(
-        color: Theme.of(context).colorScheme.errorContainer,
+        color: Theme.of(context).colorScheme.secondaryContainer,
         alignment: Alignment.centerRight,
         padding: const EdgeInsets.symmetric(horizontal: 20),
-        child: Icon(Icons.delete_outline,
-            color: Theme.of(context).colorScheme.onErrorContainer),
+        child: Row(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Text('Done',
+                style: TextStyle(
+                    color: Theme.of(context).colorScheme.onSecondaryContainer)),
+            const SizedBox(width: 8),
+            Icon(Icons.done,
+                color: Theme.of(context).colorScheme.onSecondaryContainer),
+          ],
+        ),
       ),
       confirmDismiss: (direction) async {
         if (direction == DismissDirection.startToEnd) {
           await _saveForLater(c);
           return false;
         }
-        return _confirmForget(c);
+        return true; // Done (To reply tab only)
       },
-      onDismissed: (_) => _forget(c),
+      onDismissed: (_) => _markDone(c),
       child: ListTile(
         isThreeLine: subtitle.length > 1,
         leading: CircleAvatar(
@@ -1155,6 +1311,7 @@ class _ConversationsScreenState extends State<ConversationsScreen>
     // Also drop any saved roster: for an incoming group it may deep-link the
     // wrong (MMS) thread, and forgetting should be a clean slate either way.
     await _store.clearGroupRecipients(c.id);
+    await _store.clearReplyState(c.id);
     for (final cat in _categories) {
       await _store.setMembership(cat.id, c.id, false);
     }
@@ -1538,6 +1695,8 @@ class _ConversationsScreenState extends State<ConversationsScreen>
         contacts: _contacts,
         openHere: (text) => _openWithText(c, text),
         canPrefillHere: _draftRecipients(c) != null,
+        onReplied: () => _markReplied(c),
+        onForget: () => _forgetFromSheet(c),
       ),
     );
     // Toggles/notes persist live; reload to reflect them (also covers dismiss
@@ -1706,6 +1865,12 @@ class _OrganizeSheet extends StatefulWidget {
   final Future<void> Function(String text) openHere;
   final bool canPrefillHere;
 
+  /// Ask Threadly opened a reply here (clears it from "To reply").
+  final Future<void> Function() onReplied;
+
+  /// Remove the conversation from Threadly (asks first).
+  final Future<void> Function() onForget;
+
   const _OrganizeSheet({
     required this.store,
     required this.conversation,
@@ -1718,6 +1883,8 @@ class _OrganizeSheet extends StatefulWidget {
     required this.contacts,
     required this.openHere,
     required this.canPrefillHere,
+    required this.onReplied,
+    required this.onForget,
   });
 
   @override
@@ -1996,6 +2163,7 @@ class _OrganizeSheetState extends State<_OrganizeSheet> {
     if (go != true || !mounted) return;
     if (toHere) {
       await widget.openHere(text);
+      if (!forward) await widget.onReplied();
     } else {
       await openSmsCompose([picked!.phone], body: text);
     }
@@ -2396,6 +2564,18 @@ class _OrganizeSheetState extends State<_OrganizeSheet> {
             SizedBox(
               width: double.infinity,
               child: FilledButton(onPressed: _save, child: const Text('Save')),
+            ),
+            Center(
+              child: TextButton.icon(
+                style: TextButton.styleFrom(
+                    foregroundColor: Theme.of(context).colorScheme.error),
+                onPressed: () {
+                  Navigator.pop(context);
+                  widget.onForget();
+                },
+                icon: const Icon(Icons.delete_outline),
+                label: const Text('Forget conversation'),
+              ),
             ),
           ],
         ),

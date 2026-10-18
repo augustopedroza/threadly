@@ -132,6 +132,21 @@ class SuggestionService {
     }
   }
 
+  /// Whether [c]'s newest message needs an answer (on-device AI): true /
+  /// false, or null when the model can't say right now.
+  Future<bool?> needsReply(Conversation c) async {
+    try {
+      final r = await _ch.invokeMethod<String>('needsReply', {
+        'id': c.id,
+        'title': c.title,
+        'isGroup': c.isGroup,
+      });
+      return switch (r) { 'yes' => true, 'no' => false, _ => null };
+    } on PlatformException {
+      return null;
+    }
+  }
+
   /// [id]'s buffered recent messages, newest first (on-device only).
   Future<List<({String sender, String text, DateTime time})>> recentMessages(
     String id,

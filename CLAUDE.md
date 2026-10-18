@@ -111,10 +111,22 @@ Mainline (notification-driven) pieces:
   only message content the Dart side sees; the 10-message buffer stays native.
 - `lib/ui/conversations_screen.dart` — `ConversationsScreen`, the **home** (set in `main.dart`).
   Permission onboarding; list sorted by recency with avatars, last-message preview, unread dot,
-  nickname/note/category; tabs (All + categories); search (name/nickname/note/category — *not* the
-  preview); tap → handoff; long-press → organize; swipe left → forget; **swipe right → "Save for
-  later"** (`_saveForLater`: pick a time → a reminder; Undo restores the previous one); alarm icon
-  in the app bar (badge = overdue count) → the Reminders screen. Filters out short-code/automated
+  nickname/note/category; tabs (**All, To reply**, then categories); search (name/nickname/note/
+  category — *not* the preview); tap → handoff; long-press → organize; **swipe right → "Save for
+  later"** (`_saveForLater`: pick a time → a reminder; Undo restores the previous one). **No
+  destructive swipes anywhere** — a swipe from the screen edge is also Android's back gesture, and
+  it was forgetting chats / clearing reminders by accident: forgetting lives in the organize
+  sheet ("Forget conversation", confirmed), swipes need half the width (`dismissThresholds`). Alarm
+  icon in the app bar (badge = overdue count) → the Reminders screen.
+  **To reply** tab (`_replyTab`, rules in `lib/models/reply.dart` `belongsInToReply`, unit-tested
+  in `test/reply_test.dart`): last 7 days, newest message from someone else (not a reaction like
+  `👍 to “…”`, not the user's own inline reply — native `lastFromMe`), not marked done since that
+  message, and not judged "no" by the on-device AI. `_judgeReplies` asks
+  `ConversationSuggester.needsReply` (YES/NO few-shot) one chat at a time while Threadly is on
+  screen and saves each verdict per message (`reply_state.verdict_at`), so a message is judged
+  once; unjudged chats show (benefit of the doubt, and the fallback where there's no AI). Threadly
+  can't see replies sent in Google Messages, so a chat leaves on swipe-left **Done** (Undo) or
+  when Ask Threadly opens a reply to it (`_markReplied`); a newer message brings it back. Filters out short-code/automated
   senders via `_isAutomatedSender` (keeps groups, 10+ digit numbers, saved contacts). Hosts the New
   Group flow and the inline `_OrganizeSheet`. Tapping resolves the open target: exact thread via
   `launch(id)` (GM conversation id, any kind); else 1:1 → `sms:` to the contact number / created
@@ -175,7 +187,8 @@ Mainline (notification-driven) pieces:
   the manifest. Home-screen paths (save for later, Reminders screen) go through
   `_setReminder` → `OrganizerStore.setReminder` (touches only the reminder fields).
 - `lib/ui/reminders_screen.dart` — `RemindersScreen`: every reminder, **Due** (newest first) then
-  **Upcoming**; tap opens the chat (handoff), snooze icon → reschedule, ✓ / swipe → clear (Undo).
+  **Upcoming**; tap opens the chat (handoff), snooze icon → reschedule, ✓ → clear (Undo restores
+  even a past-due one). No swipe-to-clear (back-gesture collisions).
   The home screen owns the data (`_reminderEntries`) and passes callbacks.
 - `lib/ui/later_picker.dart` + `lib/models/later.dart` — `pickLater`: quick times (`laterPresets`:
   in 1 hour, this evening (before 5 PM), tomorrow morning, this weekend (Mon-Thu), next week (not
@@ -249,14 +262,15 @@ Mainline (notification-driven) pieces:
   color palette. `lib/models/phone.dart` — `normalizePhone(raw)` (digits-only, last 10).
 - `lib/main.dart` — just `main()` (initializes reminders) and `ThreadlyApp` (theme, home).
 
-### SQLite schema (organizer.db, version 8)
+### SQLite schema (organizer.db, version 9)
 
 `onCreate` builds everything; `onUpgrade` migrates: `<2` group-chat tables (dormant now — no
 code reads them; kept so the schema doesn't change), `<3` `name` column on
 `conversation_annotations`, `<4` `conversation_reads`, `<5` `pending_groups` (name/category for a
 group started before it exists, applied + removed on first appearance), `<6` `group_recipients`
 (a created group's full member numbers, for `sms:` reopen), `<7` `remind_at` column on
-`conversation_annotations`, `<8` `remind_what` column (what the reminder is for). **Bump
+`conversation_annotations`, `<8` `remind_what` column (what the reminder is for), `<9`
+`reply_state` (To reply: `done_at`, `verdict_at`, `needs_reply`). **Bump
 `version` and add an `onUpgrade`
 branch for any schema change** — existing installs carry real user data.
 
@@ -282,6 +296,7 @@ flutter test test/widget_test.dart --plain-name "normalizePhone"   # run tests b
 flutter test test/due_date_test.dart   # the reminder date resolver
 flutter test test/command_test.dart    # Ask Threadly: forward text, contact matching
 flutter test test/later_test.dart      # save-for-later / snooze time presets
+flutter test test/reply_test.dart      # who shows in the To reply tab
 flutter run                     # run on a connected device/emulator
 flutter build apk --debug       # verify the full Android native stack compiles
 ```

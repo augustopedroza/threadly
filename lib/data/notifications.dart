@@ -27,6 +27,11 @@ class Conversation {
   /// notification only (never a message store), so it covers RCS as well.
   final String? preview;
 
+  /// The newest message Threadly saw is the user's own (an inline reply from
+  /// the notification), so they've answered. Replies sent in Google Messages
+  /// itself aren't visible to Threadly.
+  final bool lastFromMe;
+
   const Conversation({
     required this.id,
     required this.title,
@@ -34,6 +39,7 @@ class Conversation {
     required this.unread,
     required this.isGroup,
     this.preview,
+    this.lastFromMe = false,
   });
 }
 
@@ -74,6 +80,7 @@ class NotificationConversationsService {
             final p = (m['preview'] as String?)?.trim();
             return (p == null || p.isEmpty) ? null : p;
           }(),
+          lastFromMe: (m['lastFromMe'] as bool?) ?? false,
         ),
     ];
   }

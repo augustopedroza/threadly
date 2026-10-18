@@ -290,9 +290,15 @@ class ConversationNotificationListener : NotificationListenerService() {
             val store = prefs(ctx)
             val convos = JSONObject(store.getString(KEY_CONVOS, "{}") ?: "{}")
             val active = store.getStringSet(KEY_ACTIVE, emptySet()) ?: emptySet()
+            val recent = JSONObject(recentPrefs(ctx).getString(KEY_RECENT, "{}") ?: "{}")
             val out = ArrayList<JSONObject>()
             for (id in convos.keys()) {
                 val e = convos.getJSONObject(id)
+                // The newest buffered message is the user's own (an inline
+                // reply from the notification): they've answered.
+                val buf = recent.optJSONArray(id)
+                val lastFromMe = buf != null && buf.length() > 0 &&
+                    buf.getJSONObject(buf.length() - 1).optString("s") == "Me"
                 out.add(
                     JSONObject()
                         .put("id", id)
@@ -301,6 +307,7 @@ class ConversationNotificationListener : NotificationListenerService() {
                         .put("group", e.optBoolean("group", false))
                         .put("preview", e.optString("preview"))
                         .put("unread", active.contains(id))
+                        .put("lastFromMe", lastFromMe)
                 )
             }
             out.sortByDescending { it.optLong("ts") }

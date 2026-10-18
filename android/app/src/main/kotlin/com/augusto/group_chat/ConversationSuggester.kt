@@ -291,6 +291,67 @@ object ConversationSuggester {
         return out
     }
 
+    // --- "To reply" -------------------------------------------------------------
+
+    /**
+     * Whether the conversation's newest message needs an answer from the
+     * user (a question, request, invitation…) — the "To reply" tab's filter.
+     * `"yes"` / `"no"`, or null when the model can't run right now (the tab
+     * then keeps the chat, giving it the benefit of the doubt).
+     */
+    suspend fun needsReply(ctx: Context, id: String, title: String, isGroup: Boolean): String? {
+        val messages = ConversationNotificationListener.recentMessages(ctx, id)
+        val last = messages.lastOrNull() ?: return null
+        if (last.sender == "Me") return "no"
+        // A reaction ("👍 to “…”": an emoji, never a word) never needs one.
+        if (Regex("^[^\\p{L}\\p{N}\\s]{1,8} to [“\"]").containsMatchIn(last.text.trim())) return "no"
+        return try {
+            if (!ready()) return null
+            val response = model.generateContent(
+                generateContentRequest(TextPart(replyPrompt(title, isGroup, messages))) {
+                    temperature = 0.0f
+                    topK = 1
+                    maxOutputTokens = 4
+                }
+            )
+            val answer = response.candidates.firstOrNull()?.text.orEmpty().uppercase()
+            when {
+                "YES" in answer -> "yes"
+                "NO" in answer -> "no"
+                else -> null
+            }
+        } catch (e: GenAiException) {
+            android.util.Log.w(TAG, "needsReply: ${e.errorCode} ${e.message}")
+            null
+        }
+    }
+
+    private fun replyPrompt(title: String, isGroup: Boolean, messages: List<RecentMessage>): String {
+        val lines = messages.takeLast(6).joinToString("\n") { m ->
+            val who = m.sender.ifEmpty { if (isGroup) "Someone" else title }
+            "$who: ${m.text.take(300).replace('\n', ' ')}"
+        }
+        val kind = if (isGroup) "a group chat" else "a one-on-one chat"
+        return buildString {
+            appendLine("You sort a phone owner's text messages. \"Me\" is the owner.")
+            appendLine("This is $kind shown as \"$title\". Recent messages, oldest first:")
+            appendLine(lines)
+            appendLine()
+            appendLine(
+                "Does the newest message need an answer from the owner? Questions, " +
+                    "requests, invitations, and things to confirm do. Thanks, okays, " +
+                    "FYIs, updates, and messages meant for someone else in a group don't."
+            )
+            appendLine("Answer with one word: YES or NO.")
+            appendLine()
+            appendLine("\"Can you pick up Ava at 5?\" -> YES")
+            appendLine("\"ok thanks!\" -> NO")
+            appendLine("\"Are we still on for Saturday?\" -> YES")
+            appendLine("\"Running 10 minutes late\" -> NO")
+            append("Answer:")
+        }
+    }
+
     // --- "Ask Threadly" -------------------------------------------------------
 
     /**

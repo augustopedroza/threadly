@@ -2,6 +2,7 @@ import 'package:path/path.dart' as p;
 import 'package:sqflite/sqflite.dart';
 
 import '../models/category.dart';
+import '../models/reply.dart';
 
 /// Local persistence for the app-managed organizing layer:
 ///  - categories + their members (conversation ids; the column is still named
@@ -25,7 +26,7 @@ class OrganizerStore {
     final dir = await getDatabasesPath();
     return openDatabase(
       p.join(dir, 'organizer.db'),
-      version: 8,
+      version: 9,
       onCreate: (db, _) async {
         await db.execute('''
           CREATE TABLE groupings(
@@ -53,6 +54,7 @@ class OrganizerStore {
         await _createReadsTable(db);
         await _createPendingGroupsTable(db);
         await _createGroupRecipientsTable(db);
+        await _createReplyStateTable(db);
       },
       onUpgrade: (db, oldVersion, _) async {
         if (oldVersion < 2) await _createGroupChatTables(db);
@@ -71,6 +73,7 @@ class OrganizerStore {
           await db.execute(
               'ALTER TABLE conversation_annotations ADD COLUMN remind_what TEXT');
         }
+        if (oldVersion < 9) await _createReplyStateTable(db);
       },
     );
   }
@@ -114,6 +117,19 @@ class OrganizerStore {
       CREATE TABLE group_recipients(
         thread_key TEXT PRIMARY KEY,
         members TEXT NOT NULL
+      )''');
+  }
+
+  /// "To reply" bookkeeping (added in schema v9): when the user marked a
+  /// conversation done (its last activity then), and the on-device AI's
+  /// verdict on whether its newest message needs an answer.
+  Future<void> _createReplyStateTable(Database db) async {
+    await db.execute('''
+      CREATE TABLE reply_state(
+        thread_key TEXT PRIMARY KEY,
+        done_at INTEGER,
+        verdict_at INTEGER,
+        needs_reply INTEGER
       )''');
   }
 
@@ -304,6 +320,56 @@ class OrganizerStore {
         remindAtMs: remindAtMs,
         remindWhat: remindWhat);
     return (await allAnnotations())[threadKey];
+  }
+
+  // --- To reply -----------------------------------------------------------
+
+  /// thread key -> reply state.
+  Future<Map<String, ReplyState>> allReplyStates() async {
+    final db = await _database;
+    final rows = await db.query('reply_state');
+    return {
+      for (final r in rows)
+        r['thread_key'] as String: ReplyState(
+          doneAtMs: r['done_at'] as int?,
+          verdictAtMs: r['verdict_at'] as int?,
+          needsReply: switch (r['needs_reply']) {
+            1 => true,
+            0 => false,
+            _ => null,
+          },
+        ),
+    };
+  }
+
+  /// Mark [threadKey] done (replied) as of its last activity [atMs], or
+  /// undo that (null).
+  Future<void> setReplyDone(String threadKey, int? atMs) async {
+    final db = await _database;
+    await db.transaction((txn) async {
+      await txn.insert('reply_state', {'thread_key': threadKey},
+          conflictAlgorithm: ConflictAlgorithm.ignore);
+      await txn.update('reply_state', {'done_at': atMs},
+          where: 'thread_key = ?', whereArgs: [threadKey]);
+    });
+  }
+
+  /// Record the AI's verdict on [threadKey]'s message at [atMs].
+  Future<void> setReplyVerdict(String threadKey, int atMs, bool needsReply) async {
+    final db = await _database;
+    await db.transaction((txn) async {
+      await txn.insert('reply_state', {'thread_key': threadKey},
+          conflictAlgorithm: ConflictAlgorithm.ignore);
+      await txn.update(
+          'reply_state', {'verdict_at': atMs, 'needs_reply': needsReply ? 1 : 0},
+          where: 'thread_key = ?', whereArgs: [threadKey]);
+    });
+  }
+
+  Future<void> clearReplyState(String threadKey) async {
+    final db = await _database;
+    await db.delete('reply_state',
+        where: 'thread_key = ?', whereArgs: [threadKey]);
   }
 
   // --- Read markers ------------------------------------------------------
