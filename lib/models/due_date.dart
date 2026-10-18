@@ -1,6 +1,6 @@
 /// Turns date/time words copied from a text message ("Saturday at 9am",
-/// "Oct 20", "tomorrow at noon", "the 1st") into a concrete moment, for
-/// reminder suggestions.
+/// "Oct 20", "tomorrow at noon", "the 1st", "in 2 hours") into a concrete
+/// moment, for reminder suggestions and "remind me …" commands.
 ///
 /// Deterministic on purpose: the on-device model only copies the words, and
 /// this resolves them relative to [ref] — when that message was sent — so
@@ -49,6 +49,26 @@ DueDate? parseDueDate(String words, DateTime ref) {
   var text = ' ${words.toLowerCase().replaceAll(RegExp(r"[,.!?]"), ' ')} ';
   text = text.replaceAll(RegExp(r'\s+'), ' ');
   final refDay = DateTime(ref.year, ref.month, ref.day);
+
+  // "in 20 minutes", "in an hour", "in 3 days": relative to [ref].
+  final rel = RegExp(
+    r' in (\d+|an?) (minute|min|hour|hr|day|week)s? ',
+  ).firstMatch(text);
+  if (rel != null) {
+    final n = int.tryParse(rel.group(1)!) ?? 1;
+    switch (rel.group(2)) {
+      case 'minute' || 'min':
+        return DueDate(ref.add(Duration(minutes: n)), hasTime: true);
+      case 'hour' || 'hr':
+        return DueDate(ref.add(Duration(hours: n)), hasTime: true);
+      case 'day':
+        final d = refDay.add(Duration(days: n));
+        return DueDate(DateTime(d.year, d.month, d.day, _defaultHour), hasTime: false);
+      case 'week':
+        final d = refDay.add(Duration(days: 7 * n));
+        return DueDate(DateTime(d.year, d.month, d.day, _defaultHour), hasTime: false);
+    }
+  }
 
   // --- Time of day ---------------------------------------------------------
   int? hour;

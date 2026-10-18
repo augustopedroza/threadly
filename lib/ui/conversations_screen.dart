@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 
 import '../data/contacts.dart';
 import '../data/notifications.dart';
@@ -9,6 +10,8 @@ import '../data/suggestions.dart';
 import '../format.dart';
 import '../messaging.dart';
 import '../models/category.dart';
+import '../models/command.dart';
+import '../models/due_date.dart';
 import 'category_manager_screen.dart';
 import 'new_group_screen.dart';
 
@@ -1129,20 +1132,8 @@ class _ConversationsScreenState extends State<ConversationsScreen>
     }
     // 2) Deep-link by number(s): the contact's number for a 1:1, or the saved
     //    roster of a group created here.
-    List<String>? recipients;
-    if (c.isGroup) {
-      // Only deep-link a group when we have its *complete* roster (2+). A
-      // partial roster would open a 1:1 or a different group.
-      final roster = _groupRecipients[c.id];
-      recipients = (roster != null && roster.length >= 2) ? roster : null;
-    } else {
-      final number =
-          _contacts.phoneForName(c.title) ?? _numberFromTitle(c.title);
-      recipients = number != null ? [number] : null;
-    }
-    if (recipients != null &&
-        recipients.isNotEmpty &&
-        await openSmsCompose(recipients)) {
+    final recipients = _draftRecipients(c);
+    if (recipients != null && await openSmsCompose(recipients)) {
       _handedOff(c);
       return;
     }
@@ -1157,6 +1148,34 @@ class _ConversationsScreenState extends State<ConversationsScreen>
           content: Text("Couldn't open this conversation in Messages."),
         ),
       );
+    }
+  }
+
+  /// Who an `sms:` link for [c] addresses: the contact's number for a 1:1,
+  /// or the complete roster (2+) of a group created here — a partial roster
+  /// would open a 1:1 or a different group. Null when [c] can't be addressed
+  /// by number (an incoming group), so no draft can be pre-filled.
+  List<String>? _draftRecipients(Conversation c) {
+    if (c.isGroup) {
+      final roster = _groupRecipients[c.id];
+      return (roster != null && roster.length >= 2) ? roster : null;
+    }
+    final number = _contacts.phoneForName(c.title) ?? _numberFromTitle(c.title);
+    return number != null ? [number] : null;
+  }
+
+  /// Open [c] in Messages with [text] typed in as a draft; the user sends.
+  /// Where Messages can't pre-fill the thread (an incoming group), the text
+  /// is copied and the exact thread opened, to paste.
+  Future<void> _openWithText(Conversation c, String text) async {
+    final recipients = _draftRecipients(c);
+    if (recipients != null && await openSmsCompose(recipients, body: text)) {
+      _handedOff(c);
+      return;
+    }
+    await Clipboard.setData(ClipboardData(text: text));
+    if (await _notifs.launch(c.id) || await _notifs.openMessagesApp()) {
+      _handedOff(c);
     }
   }
 
@@ -1394,6 +1413,9 @@ class _ConversationsScreenState extends State<ConversationsScreen>
         suggestion: suggestion,
         rawNumber: _isRawNumber(c) ? _numberFromTitle(c.title) : null,
         suggestService: _suggest,
+        contacts: _contacts,
+        openHere: (text) => _openWithText(c, text),
+        canPrefillHere: _draftRecipients(c) != null,
       ),
     );
     // Toggles/notes persist live; reload to reflect them (also covers dismiss
@@ -1556,6 +1578,12 @@ class _OrganizeSheet extends StatefulWidget {
   final String? rawNumber;
   final SuggestionService suggestService;
 
+  /// For "Ask Threadly": resolving names, and opening this conversation with
+  /// a draft (pre-filled when [canPrefillHere], else copied to paste).
+  final ContactsSnapshot contacts;
+  final Future<void> Function(String text) openHere;
+  final bool canPrefillHere;
+
   const _OrganizeSheet({
     required this.store,
     required this.conversation,
@@ -1565,6 +1593,9 @@ class _OrganizeSheet extends StatefulWidget {
     required this.suggestion,
     required this.rawNumber,
     required this.suggestService,
+    required this.contacts,
+    required this.openHere,
+    required this.canPrefillHere,
   });
 
   @override
@@ -1588,6 +1619,416 @@ class _OrganizeSheetState extends State<_OrganizeSheet> {
   /// What an applied suggested reminder is for; its notification text when
   /// the note is empty.
   String? _remindWhat;
+
+  // "Ask Threadly": the instruction box, whether it's thinking, what it says
+  // back, and a category it proposes (applied on tap).
+  final TextEditingController _ask = TextEditingController();
+  bool _asking = false;
+
+  /// Whether the color + categories section is expanded (collapsed at first).
+  bool _showStyle = false;
+  String? _askInfo;
+  Category? _askCategory;
+
+  static const _askExamples = '“forward this to Steve, say it’s from Adam”, '
+      '“tell them I’m running late”, “remind me Friday at 5”, or '
+      '“put this in Soccer”';
+
+  /// Interpret the instruction on the device, then stage the result for the
+  /// user to confirm: a draft card (forward / reply), or filled-in fields
+  /// (remind / file) that Save keeps.
+  Future<void> _runAsk() async {
+    final instruction = _ask.text.trim();
+    if (instruction.isEmpty || _asking) return;
+    FocusScope.of(context).unfocus();
+    setState(() {
+      _asking = true;
+      _askInfo = null;
+      _askCategory = null;
+    });
+    final r = await widget.suggestService.interpret(
+      widget.conversation,
+      instruction,
+      categories: [
+        for (final c in _categories)
+          if (!_selected.contains(c.id)) c.name,
+      ],
+    );
+    if (!mounted) return;
+    setState(() => _asking = false);
+    final cmd = r.command;
+    if (cmd == null) {
+      setState(() => _askInfo = r.unavailable
+          ? 'Ask Threadly needs the on-device AI, which isn’t available right '
+              'now. Try again in a moment.'
+          : 'Sorry, I didn’t get that. Try $_askExamples.');
+      return;
+    }
+    switch (cmd.action) {
+      case CommandAction.forward || CommandAction.reply:
+        await _confirmDraft(cmd);
+      case CommandAction.remind:
+        final now = DateTime.now();
+        final due = (cmd.when != null ? parseDueDate(cmd.when!, now) : null) ??
+            parseDueDate(instruction, now);
+        if (due == null || !due.when.isAfter(now)) {
+          setState(() => _askInfo = 'I couldn’t tell when. Try “remind me '
+              'Friday at 5” or “in 2 hours”.');
+          return;
+        }
+        setState(() {
+          _remindAtMs = due.when.millisecondsSinceEpoch;
+          _remindWhat = cmd.text;
+          _askInfo =
+              'Reminder set for ${formatDue(due.when)}. Tap Save to keep it.';
+          _ask.clear();
+        });
+      case CommandAction.file:
+        final cat = _categories
+            .where((c) => c.name == cmd.category && !_selected.contains(c.id))
+            .firstOrNull;
+        final nickname = cmd.nickname;
+        if (cat == null && nickname == null) {
+          setState(() => _askInfo = 'I couldn’t tell how to file it. Your '
+              'categories: ${_categories.map((c) => c.name).join(', ')}.');
+          return;
+        }
+        setState(() {
+          if (nickname != null) _name.text = nickname;
+          _askCategory = cat;
+          _askInfo = [
+            if (nickname != null) 'Nickname filled in. Tap Save to keep it.',
+            if (cat != null) 'Tap to add it to ${cat.name}:',
+          ].join(' ');
+          _ask.clear();
+        });
+    }
+  }
+
+  /// The confirmation card for a forward or reply: who it goes to (choosing
+  /// among same-named contacts), which message (forward), and the editable
+  /// text. Confirming opens Messages with the draft; nothing is sent here.
+  Future<void> _confirmDraft(ThreadlyCommand cmd) async {
+    final here = widget.conversation;
+    final forward = cmd.action == CommandAction.forward;
+    String norm(String t) => t.toLowerCase().trim();
+    final toName = cmd.to;
+    final toHere = toName == null ||
+        norm(toName) == norm(here.title) ||
+        (_name.text.trim().isNotEmpty && norm(toName) == norm(_name.text));
+    final matches = toHere
+        ? const <({String phone, String display})>[]
+        : widget.contacts.matchPeople(toName);
+    var picked = matches.length == 1 ? matches.first : null;
+
+    final recent = forward
+        ? await widget.suggestService.recentMessages(here.id)
+        : const <({String sender, String text, DateTime time})>[];
+    if (!mounted) return;
+    final messages = recent.isNotEmpty
+        ? recent.take(5).toList()
+        : [
+            if (here.preview != null && here.preview!.isNotEmpty)
+              (sender: '', text: here.preview!, time: here.lastActivity),
+          ];
+    var message = messages.where((m) => m.sender != 'Me').firstOrNull ??
+        messages.firstOrNull;
+    if (forward && message == null) {
+      setState(() => _askInfo = 'There’s no message here to forward yet.');
+      return;
+    }
+    String bodyFor(({String sender, String text, DateTime time})? m) => forward
+        ? forwardBody(m!.text,
+            note: cmd.text, sender: here.isGroup ? m.sender : here.title)
+        : (cmd.text ?? '');
+    final body = TextEditingController(text: bodyFor(message));
+    final saved = widget.annotation?.name?.trim() ?? '';
+    final hereLabel = saved.isNotEmpty ? saved : here.title;
+
+    final go = await showModalBottomSheet<bool>(
+      context: context,
+      isScrollControlled: true,
+      showDragHandle: true,
+      builder: (ctx) => StatefulBuilder(
+        builder: (ctx, setCard) {
+          final theme = Theme.of(ctx);
+          final noOne = !toHere && matches.isEmpty;
+          final title = forward
+              ? 'Forward to ${toHere ? hereLabel : (picked?.display ?? toName)}'
+              : toHere
+                  ? (here.isGroup ? 'Reply in “$hereLabel”' : 'Reply to $hereLabel')
+                  : 'Text ${picked?.display ?? toName}';
+          return Padding(
+            padding: EdgeInsets.fromLTRB(
+                24, 0, 24, MediaQuery.of(ctx).viewInsets.bottom + 8),
+            child: SafeArea(
+              child: SingleChildScrollView(
+                child: Column(
+                  mainAxisSize: MainAxisSize.min,
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text(title,
+                        style: theme.textTheme.titleMedium,
+                        maxLines: 2,
+                        overflow: TextOverflow.ellipsis),
+                    if (noOne) ...[
+                      const SizedBox(height: 12),
+                      Text('No contact matches “$toName”. Try their full '
+                          'name as saved in Contacts.'),
+                    ],
+                    if (matches.length > 1) ...[
+                      const SizedBox(height: 12),
+                      Text('Which one?', style: theme.textTheme.labelLarge),
+                      Wrap(
+                        spacing: 8,
+                        children: [
+                          for (final m in matches)
+                            ChoiceChip(
+                              label: Text('${m.display} · ${_prettyPhone(m.phone)}'),
+                              selected: picked == m,
+                              onSelected: (_) => setCard(() => picked = m),
+                            ),
+                        ],
+                      ),
+                    ],
+                    if (forward && messages.length > 1) ...[
+                      const SizedBox(height: 12),
+                      Text('Message', style: theme.textTheme.labelLarge),
+                      RadioGroup<int>(
+                        groupValue: messages.indexOf(message!),
+                        onChanged: (i) => setCard(() {
+                          message = messages[i!];
+                          body.text = bodyFor(message);
+                        }),
+                        child: Column(
+                          children: [
+                            for (final (i, m) in messages.indexed)
+                              RadioListTile<int>(
+                                contentPadding: EdgeInsets.zero,
+                                dense: true,
+                                value: i,
+                                title: Text(
+                                  [if (m.sender.isNotEmpty) '${m.sender}:', m.text]
+                                      .join(' '),
+                                  maxLines: 2,
+                                  overflow: TextOverflow.ellipsis,
+                                ),
+                              ),
+                          ],
+                        ),
+                      ),
+                    ],
+                    if (!noOne) ...[
+                      const SizedBox(height: 12),
+                      TextField(
+                        controller: body,
+                        minLines: 2,
+                        maxLines: 5,
+                        textCapitalization: TextCapitalization.sentences,
+                        decoration: const InputDecoration(
+                          labelText: 'Message',
+                          border: OutlineInputBorder(),
+                        ),
+                      ),
+                    ],
+                    if (toHere && !widget.canPrefillHere) ...[
+                      const SizedBox(height: 8),
+                      Text(
+                        'Messages can’t pre-fill this group, so Threadly copies '
+                        'the text and opens the chat. Just paste and send.',
+                        style: theme.textTheme.bodySmall,
+                      ),
+                    ],
+                    const SizedBox(height: 12),
+                    Row(
+                      children: [
+                        TextButton(
+                          onPressed: () => Navigator.pop(ctx, false),
+                          child: const Text('Cancel'),
+                        ),
+                        const Spacer(),
+                        ValueListenableBuilder<TextEditingValue>(
+                          valueListenable: body,
+                          builder: (ctx, v, _) => FilledButton.icon(
+                            onPressed: (noOne ||
+                                    (!toHere && picked == null) ||
+                                    v.text.trim().isEmpty)
+                                ? null
+                                : () => Navigator.pop(ctx, true),
+                            icon: const Icon(Icons.open_in_new),
+                            label: const Text('Open in Messages'),
+                          ),
+                        ),
+                      ],
+                    ),
+                  ],
+                ),
+              ),
+            ),
+          );
+        },
+      ),
+    );
+    final text = body.text.trim();
+    body.dispose();
+    if (go != true || !mounted) return;
+    if (toHere) {
+      await widget.openHere(text);
+    } else {
+      await openSmsCompose([picked!.phone], body: text);
+    }
+    if (!mounted) return;
+    setState(() {
+      _askInfo = 'Opened in Messages with your draft. Send it there.';
+      _ask.clear();
+    });
+  }
+
+  /// "(801) 555-0101" for a 10-digit number; anything else as is.
+  static String _prettyPhone(String digits) => digits.length == 10
+      ? '(${digits.substring(0, 3)}) ${digits.substring(3, 6)}-${digits.substring(6)}'
+      : digits;
+
+  /// Color and categories change rarely, so they start collapsed to a
+  /// one-line summary (the color dot and category chips); tap to edit.
+  Widget _colorAndCategories() {
+    final theme = Theme.of(context);
+    final chosen = [
+      for (final c in _categories)
+        if (_selected.contains(c.id)) c,
+    ];
+    final header = InkWell(
+      borderRadius: BorderRadius.circular(8),
+      onTap: () => setState(() => _showStyle = !_showStyle),
+      child: Padding(
+        padding: const EdgeInsets.symmetric(vertical: 10),
+        child: Row(
+          children: [
+            Text('Color & categories', style: theme.textTheme.labelMedium),
+            const SizedBox(width: 12),
+            Expanded(
+              child: _showStyle
+                  ? const SizedBox.shrink()
+                  : Wrap(
+                      spacing: 6,
+                      runSpacing: 4,
+                      crossAxisAlignment: WrapCrossAlignment.center,
+                      children: [
+                        if (_color != null)
+                          CircleAvatar(
+                              radius: 7, backgroundColor: Color(_color!)),
+                        for (final c in chosen)
+                          _MiniChip(label: c.name, color: Color(c.color)),
+                        if (_color == null && chosen.isEmpty)
+                          Text('None', style: theme.textTheme.bodySmall),
+                      ],
+                    ),
+            ),
+            Icon(_showStyle ? Icons.expand_less : Icons.expand_more),
+          ],
+        ),
+      ),
+    );
+    if (!_showStyle) return header;
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        header,
+        Text('Color', style: theme.textTheme.labelMedium),
+        const SizedBox(height: 8),
+        Wrap(
+          spacing: 8,
+          children: [
+            _colorDot(null),
+            for (final c in kColorPalette) _colorDot(c),
+          ],
+        ),
+        const SizedBox(height: 16),
+        Row(
+          children: [
+            Text('Categories', style: theme.textTheme.labelMedium),
+            const Spacer(),
+            TextButton.icon(
+              onPressed: _addCategory,
+              icon: const Icon(Icons.add, size: 18),
+              label: const Text('New'),
+            ),
+          ],
+        ),
+        for (final c in _categories)
+          CheckboxListTile(
+            dense: true,
+            contentPadding: EdgeInsets.zero,
+            secondary: CircleAvatar(
+              radius: 8,
+              backgroundColor: Color(c.color),
+            ),
+            title: Text(c.name),
+            value: _selected.contains(c.id),
+            onChanged: (v) => _toggleCategory(c, v == true),
+          ),
+      ],
+    );
+  }
+
+  Widget _askBox() {
+    final theme = Theme.of(context);
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        TextField(
+          controller: _ask,
+          enabled: !_asking,
+          textInputAction: TextInputAction.send,
+          textCapitalization: TextCapitalization.sentences,
+          onSubmitted: (_) => _runAsk(),
+          decoration: InputDecoration(
+            prefixIcon: const Icon(Icons.auto_awesome),
+            hintText: 'Ask Threadly: forward, reply, remind, file…',
+            border: const OutlineInputBorder(),
+            isDense: true,
+            suffixIcon: _asking
+                ? const Padding(
+                    padding: EdgeInsets.all(12),
+                    child: SizedBox(
+                      width: 16,
+                      height: 16,
+                      child: CircularProgressIndicator(strokeWidth: 2),
+                    ),
+                  )
+                : IconButton(
+                    tooltip: 'Ask',
+                    icon: const Icon(Icons.send),
+                    onPressed: _runAsk,
+                  ),
+          ),
+        ),
+        if (_askInfo != null)
+          Padding(
+            padding: const EdgeInsets.only(top: 6),
+            child: Text(_askInfo!, style: theme.textTheme.bodySmall),
+          ),
+        if (_askCategory != null)
+          Padding(
+            padding: const EdgeInsets.only(top: 4),
+            child: ActionChip(
+              avatar: CircleAvatar(
+                  radius: 6, backgroundColor: Color(_askCategory!.color)),
+              label: Text('Add to ${_askCategory!.name}'),
+              onPressed: () async {
+                await _toggleCategory(_askCategory!, true);
+                if (mounted) {
+                  setState(() {
+                    _askInfo = 'Added to ${_askCategory!.name}.';
+                    _askCategory = null;
+                  });
+                }
+              },
+            ),
+          ),
+      ],
+    );
+  }
 
   @override
   void initState() {
@@ -1660,6 +2101,7 @@ class _OrganizeSheetState extends State<_OrganizeSheet> {
   void dispose() {
     _name.dispose();
     _note.dispose();
+    _ask.dispose();
     super.dispose();
   }
 
@@ -1794,6 +2236,8 @@ class _OrganizeSheetState extends State<_OrganizeSheet> {
               overflow: TextOverflow.ellipsis,
             ),
             const SizedBox(height: 12),
+            _askBox(),
+            const SizedBox(height: 16),
             TextField(
               controller: _name,
               decoration: const InputDecoration(
@@ -1842,43 +2286,8 @@ class _OrganizeSheetState extends State<_OrganizeSheet> {
                     ),
               onTap: _pickReminder,
             ),
-            const SizedBox(height: 8),
-            Text('Color', style: Theme.of(context).textTheme.labelMedium),
-            const SizedBox(height: 8),
-            Wrap(
-              spacing: 8,
-              children: [
-                _colorDot(null),
-                for (final c in kColorPalette) _colorDot(c),
-              ],
-            ),
-            const SizedBox(height: 16),
-            Row(
-              children: [
-                Text(
-                  'Categories',
-                  style: Theme.of(context).textTheme.labelMedium,
-                ),
-                const Spacer(),
-                TextButton.icon(
-                  onPressed: _addCategory,
-                  icon: const Icon(Icons.add, size: 18),
-                  label: const Text('New'),
-                ),
-              ],
-            ),
-            for (final c in _categories)
-              CheckboxListTile(
-                dense: true,
-                contentPadding: EdgeInsets.zero,
-                secondary: CircleAvatar(
-                  radius: 8,
-                  backgroundColor: Color(c.color),
-                ),
-                title: Text(c.name),
-                value: _selected.contains(c.id),
-                onChanged: (v) => _toggleCategory(c, v == true),
-              ),
+            const SizedBox(height: 4),
+            _colorAndCategories(),
             const SizedBox(height: 8),
             SizedBox(
               width: double.infinity,

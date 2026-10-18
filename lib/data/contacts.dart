@@ -52,6 +52,30 @@ class ContactsSnapshot {
   Uint8List? photoForPhone(String phone) =>
       _phoneToPhoto[normalizePhone(phone)];
 
+  /// Contacts matching a spoken [name] ("Steve", "steve winters"): an exact
+  /// full-name match wins; otherwise every spoken word must start a word of
+  /// the contact's name, in any order. One entry per contact number.
+  List<({String phone, String display})> matchPeople(String name) {
+    List<String> words(String t) => t
+        .toLowerCase()
+        .replaceAll(RegExp(r"[^\p{L}\p{N}' ]", unicode: true), ' ')
+        .split(RegExp(r'\s+'))
+        .where((w) => w.isNotEmpty)
+        .toList();
+    final spoken = words(name);
+    if (spoken.isEmpty) return const [];
+    final exact = [
+      for (final p in people)
+        if (words(p.display).join(' ') == spoken.join(' ')) p,
+    ];
+    if (exact.isNotEmpty) return exact;
+    return [
+      for (final p in people)
+        if (spoken.every((w) => words(p.display).any((d) => d.startsWith(w))))
+          p,
+    ];
+  }
+
   /// A dialable phone number for a saved contact [name], or null.
   String? phoneForName(String name) => _nameToPhone[name.toLowerCase().trim()];
 

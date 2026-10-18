@@ -31,6 +31,11 @@ want to read or reply.
   upcoming date ("practice Saturday at 9am"). For an unknown number it can also
   offer to **save the person to your contacts**. Nothing is saved until you
   confirm.
+- **Ask Threadly**: tell it what to do in plain words, typed or spoken with
+  your keyboard's mic. "Forward this to Steve Winters, say it's from Adam",
+  "tell them I'm running late", "remind me Friday at 5", "put this in
+  Soccer". It works on your phone with the same on-device AI, shows you exactly
+  what it will do, and opens Google Messages with the draft ready to send.
 - **Search** by name, nickname, note, or category.
 
 ## How it works (and what it can't see)

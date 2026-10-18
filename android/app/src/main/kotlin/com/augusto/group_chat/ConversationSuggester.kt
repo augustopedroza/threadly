@@ -215,25 +215,8 @@ object ConversationSuggester {
         categories: List<String>,
         messages: List<RecentMessage>,
     ): Map<String, String> {
-        val lines = raw.lineSequence().map { it.trim() }.filter { it.isNotEmpty() }.toList()
-        val keys = listOf("NICKNAME", "NOTE", "CATEGORY", "REMIND")
-        // The model sometimes drops the labels; bare lines are then read in
-        // template order.
-        val labeled = lines.any { l -> keys.any { l.startsWith("$it:", ignoreCase = true) } }
-        fun field(key: String): String? {
-            val line = if (labeled) {
-                lines.firstOrNull { it.startsWith("$key:", ignoreCase = true) }
-                    ?.substringAfter(':')
-            } else {
-                lines.takeIf { it.size == keys.size }?.get(keys.indexOf(key))
-            } ?: return null
-            val v = line.trim().trim('"', '\'', '*', '.', '<', '>', ' ')
-            // "NONE", but also "NONE - NONE", "NONE | NONE" and the like.
-            val rest = v.replace(Regex("(?i)\\bnone\\b"), "")
-                .trim(' ', '-', '/', ',', '|', '\u2013')
-            if (v.isEmpty() || rest.isEmpty()) return null
-            return v
-        }
+        val fields = readFields(raw, listOf("NICKNAME", "NOTE", "CATEGORY", "REMIND"))
+        fun field(key: String) = fields[key]
         val out = HashMap<String, String>()
         field("NICKNAME")?.let { v ->
             val words = v.split(Regex("\\s+")).size
@@ -280,6 +263,139 @@ object ConversationSuggester {
             out["dueRef"] = (if (source.time > 0) source.time else System.currentTimeMillis())
                 .toString()
         }
+        return out
+    }
+
+    /**
+     * "LABEL: value" lines from a template answer, by label, with NONE-ish
+     * values dropped. Gemini Nano sometimes drops the labels; then exactly
+     * [keys].size bare lines are read in template order.
+     */
+    private fun readFields(raw: String, keys: List<String>): Map<String, String> {
+        val lines = raw.lineSequence().map { it.trim() }.filter { it.isNotEmpty() }.toList()
+        val labeled = lines.any { l -> keys.any { l.startsWith("$it:", ignoreCase = true) } }
+        val out = HashMap<String, String>()
+        for ((i, key) in keys.withIndex()) {
+            val line = if (labeled) {
+                lines.firstOrNull { it.startsWith("$key:", ignoreCase = true) }
+                    ?.substringAfter(':')
+            } else {
+                lines.takeIf { it.size == keys.size }?.get(i)
+            } ?: continue
+            val v = line.trim().trim('"', '\'', '*', '.', '<', '>', ' ')
+            // "NONE", but also "NONE - NONE", "NONE | NONE" and the like.
+            val rest = v.replace(Regex("(?i)\\bnone\\b"), "")
+                .trim(' ', '-', '/', ',', '|', '\u2013')
+            if (v.isNotEmpty() && rest.isNotEmpty()) out[key] = v
+        }
+        return out
+    }
+
+    // --- "Ask Threadly" -------------------------------------------------------
+
+    /**
+     * Interpret a typed or dictated instruction about one conversation ("forward
+     * this to Steve Winters, say it's from Adam") into a single action the UI
+     * confirms: `{"action": FORWARD|REPLY|REMIND|FILE, "to", "text", "when",
+     * "category", "nickname"}`. `to` is a name as said, or THIS for the
+     * conversation itself. The model only *copies* names, dates, and
+     * categories; the Dart side resolves them (contacts, `parseDueDate`, the
+     * category list), so nothing it invents can go unchecked.
+     * `{"error": "unavailable"|"busy"}` when the model can't run, `{}` when
+     * the instruction wasn't understood.
+     */
+    suspend fun interpret(
+        title: String,
+        isGroup: Boolean,
+        command: String,
+        categories: List<String>,
+    ): Map<String, String> {
+        if (command.isBlank()) return emptyMap()
+        return try {
+            if (!ready()) return mapOf("error" to "unavailable")
+            val response = model.generateContent(
+                generateContentRequest(
+                    TextPart(commandPrompt(title, isGroup, command.take(300), categories))
+                ) {
+                    temperature = 0.1f
+                    topK = 5
+                    maxOutputTokens = 120
+                }
+            )
+            parseCommand(response.candidates.firstOrNull()?.text.orEmpty(), categories)
+        } catch (e: GenAiException) {
+            android.util.Log.w(TAG, "interpret: ${e.errorCode} ${e.message}")
+            mapOf("error" to "busy")
+        }
+    }
+
+    private val commandKeys = listOf("ACTION", "TO", "TEXT", "WHEN", "CATEGORY", "NICKNAME")
+
+    private fun commandPrompt(
+        title: String,
+        isGroup: Boolean,
+        command: String,
+        categories: List<String>,
+    ): String {
+        val kind = if (isGroup) "a group chat" else "a one-on-one chat"
+        val cats = if (categories.isEmpty()) "(none)" else categories.joinToString(", ")
+        // Few-shot: one example per action. Gemini Nano follows a literal
+        // template far better than a description of one.
+        return buildString {
+            appendLine("You turn a short instruction about a text conversation into one action.")
+            appendLine("The conversation is $kind shown as \"$title\". \"This\" means its latest message.")
+            appendLine("Categories: $cats")
+            appendLine()
+            appendLine("Answer with exactly these six lines. Write NONE when a line doesn't apply.")
+            appendLine("ACTION: FORWARD, REPLY, REMIND, FILE, or NONE")
+            appendLine("TO: for FORWARD or REPLY, the person's name exactly as said; THIS for this conversation itself")
+            appendLine(
+                "TEXT: FORWARD: a short lead-in naming who it's from if asked (e.g. From Adam); " +
+                    "REPLY: the message to send, worded as the user would send it; " +
+                    "REMIND: what to be reminded about"
+            )
+            appendLine("WHEN: REMIND: the date/time words copied exactly from the instruction")
+            appendLine("CATEGORY: FILE: one category from the list, copied exactly")
+            appendLine("NICKNAME: FILE: the new name for this conversation, if one is given")
+            appendLine()
+            appendLine("Instruction: forward this to Maria Lopez and say it's from the coach")
+            appendLine("ACTION: FORWARD\nTO: Maria Lopez\nTEXT: From the coach\nWHEN: NONE\nCATEGORY: NONE\nNICKNAME: NONE")
+            appendLine()
+            appendLine("Instruction: tell them I'll be 10 minutes late")
+            appendLine("ACTION: REPLY\nTO: THIS\nTEXT: I'll be 10 minutes late\nWHEN: NONE\nCATEGORY: NONE\nNICKNAME: NONE")
+            appendLine()
+            appendLine("Instruction: text Joe that the game moved to Sunday")
+            appendLine("ACTION: REPLY\nTO: Joe\nTEXT: The game moved to Sunday\nWHEN: NONE\nCATEGORY: NONE\nNICKNAME: NONE")
+            appendLine()
+            appendLine("Instruction: remind me about this Friday at 5")
+            appendLine("ACTION: REMIND\nTO: NONE\nTEXT: NONE\nWHEN: Friday at 5\nCATEGORY: NONE\nNICKNAME: NONE")
+            appendLine()
+            appendLine("Instruction: file this under Work and call it budget team")
+            appendLine("ACTION: FILE\nTO: NONE\nTEXT: NONE\nWHEN: NONE\nCATEGORY: Work\nNICKNAME: budget team")
+            appendLine()
+            append("Instruction: $command")
+        }
+    }
+
+    private fun parseCommand(raw: String, categories: List<String>): Map<String, String> {
+        val f = readFields(raw, commandKeys)
+        val action = f["ACTION"]?.uppercase()?.trim()
+            ?.takeIf { it in setOf("FORWARD", "REPLY", "REMIND", "FILE") }
+            ?: return emptyMap()
+        val out = HashMap<String, String>()
+        out["action"] = action
+        f["TO"]?.let { to ->
+            out["to"] = if (to.equals("THIS", ignoreCase = true) ||
+                to.equals("them", ignoreCase = true)
+            ) "THIS" else to.take(60)
+        }
+        f["TEXT"]?.let { out["text"] = it.take(300) }
+        f["WHEN"]?.let { out["when"] = it.take(60) }
+        // Only ever one of the user's own categories, in its exact spelling.
+        f["CATEGORY"]?.let { v ->
+            categories.firstOrNull { it.equals(v, ignoreCase = true) }?.let { out["category"] = it }
+        }
+        f["NICKNAME"]?.let { if (it.length <= 40) out["nickname"] = it }
         return out
     }
 }

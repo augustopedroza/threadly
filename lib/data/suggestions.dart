@@ -1,5 +1,6 @@
 import 'package:flutter/services.dart';
 
+import '../models/command.dart';
 import '../models/due_date.dart';
 import 'notifications.dart';
 
@@ -105,6 +106,51 @@ class SuggestionService {
       return null;
     }
     return due.when;
+  }
+
+  /// Interpret an "Ask Threadly" instruction about [c] on the device. A
+  /// [ThreadlyCommand] when understood; else [unavailable] says whether the
+  /// model couldn't run at all (vs. didn't understand). [categories] are the
+  /// categories [c] isn't in yet.
+  Future<({ThreadlyCommand? command, bool unavailable})> interpret(
+    Conversation c,
+    String instruction, {
+    required List<String> categories,
+  }) async {
+    try {
+      final m = await _ch.invokeMapMethod<String, String>('interpret', {
+        'title': c.title,
+        'isGroup': c.isGroup,
+        'command': instruction,
+        'categories': categories,
+      });
+      if (m == null) return (command: null, unavailable: false);
+      if (m['error'] != null) return (command: null, unavailable: true);
+      return (command: ThreadlyCommand.fromMap(m), unavailable: false);
+    } on PlatformException {
+      return (command: null, unavailable: true);
+    }
+  }
+
+  /// [id]'s buffered recent messages, newest first (on-device only).
+  Future<List<({String sender, String text, DateTime time})>> recentMessages(
+    String id,
+  ) async {
+    try {
+      final list =
+          await _ch.invokeListMethod<Map<Object?, Object?>>('recent', {'id': id});
+      final out = [
+        for (final m in list ?? const <Map<Object?, Object?>>[])
+          (
+            sender: (m['sender'] as String?) ?? '',
+            text: (m['text'] as String?) ?? '',
+            time: DateTime.fromMillisecondsSinceEpoch((m['time'] as int?) ?? 0),
+          ),
+      ];
+      return out.reversed.where((m) => m.text.isNotEmpty).toList();
+    } on PlatformException {
+      return const [];
+    }
   }
 
   /// Never offer suggestions for [id] on return from Messages again.

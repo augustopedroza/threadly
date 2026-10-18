@@ -56,6 +56,20 @@ void main() {
     expect(due('Oct 20'), DateTime(2026, 10, 20, 9, 0));
   });
 
+  test('relative amounts of time', () {
+    expect(due('in 20 minutes'), DateTime(2026, 10, 16, 10, 20));
+    expect(due('remind me in an hour'), DateTime(2026, 10, 16, 11, 0));
+    expect(due('in 2 hours'), DateTime(2026, 10, 16, 12, 0));
+    expect(due('in 3 days'), DateTime(2026, 10, 19, 9, 0));
+    expect(due('in a week'), DateTime(2026, 10, 23, 9, 0));
+  });
+
+  test('a whole instruction still finds its date words', () {
+    expect(due('remind me about this Friday at 5'), DateTime(2026, 10, 16, 17, 0));
+    expect(due('remind me tomorrow at noon to call back'),
+        DateTime(2026, 10, 17, 12, 0));
+  });
+
   test('words without a date or time give nothing', () {
     expect(due('soon'), isNull);
     expect(due('next week sometime'), isNull);

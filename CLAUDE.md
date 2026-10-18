@@ -9,8 +9,8 @@ user's existing texts. It learns which conversations exist and when they last go
 one-line **last-message preview** for each, lets the user **organize** them (categories, custom
 nicknames, colors, notes, reminders, group rosters), then **hands off to Google Messages** for all reading and
 sending. It also reads contact names/photos (read-only) to show them over raw numbers, and offers
-**on-device AI suggestions** (nickname, note, category, reminder, save-as-contact) that the user
-confirms. The pitch: organize here, read/send in the app you already use.
+**on-device AI suggestions** (nickname, note, category, reminder, save-as-contact) and **"Ask
+Threadly" commands** (forward / reply / remind / file, in plain language), all confirmed by the user. The pitch: organize here, read/send in the app you already use.
 
 The message content Threadly keeps is that last-message preview plus a rolling **buffer of the last
 10 messages per conversation**, the input for suggestions. Both come straight from the Google Messages
@@ -189,6 +189,28 @@ Mainline (notification-driven) pieces:
   saves (and picks the account) there, so Threadly stays **read-only on contacts** (no
   WRITE_CONTACTS); Back from the editor returns to Threadly with nothing saved. Logs (tag
   `ThreadlySuggest`) carry ids/status/errors only — never message text.
+- **"Ask Threadly"** — a command box at the top of the organize sheet (`_askBox` / `_runAsk`):
+  plain-language instructions about that chat, typed or dictated with the keyboard mic (no
+  RECORD_AUDIO). `ConversationSuggester.interpret` (channel `interpret`) has Gemini Nano map it to
+  one action via a 6-line few-shot template — `ACTION` (FORWARD/REPLY/REMIND/FILE), `TO` (a name
+  as said, or THIS), `TEXT`, `WHEN`, `CATEGORY`, `NICKNAME` → `ThreadlyCommand`
+  (`lib/models/command.dart`). As with suggestions the model only *copies*; Dart resolves:
+  names → `ContactsSnapshot.matchPeople` (exact full name, else every spoken word prefixes a name
+  word; several → the user picks), dates → `parseDueDate` (the WHEN words, else the whole
+  instruction; also "in N minutes/hours/days/weeks"), categories → the user's list. Outcomes:
+  **forward/reply** → `_confirmDraft` card (recipient, which buffered message to forward via
+  channel `recent`, editable text from `forwardBody`, e.g. `From Adam: “…”`) → "Open in Messages"
+  opens a **draft**; nothing is ever sent by Threadly. Replies to *this* chat go through the
+  screen's `_openWithText`: `sms:…?body=` where `_draftRecipients` can address it (a 1:1, or a
+  group created here), else the text is **copied to the clipboard** and the exact thread opened
+  to paste (incoming RCS groups can't take a pre-filled draft). **remind** → fills the sheet's
+  reminder; **file** → fills the nickname / offers an "Add to <category>" chip; Save keeps them.
+  Limits: text only (notifications carry no media), "this message" = Threadly's buffered recent
+  messages for that chat (incoming; your own sends aren't seen). The card pre-selects the newest
+  message *from someone else* and lists up to 5 recent ones to pick from.
+- Organize sheet layout: Ask Threadly box, nickname (+ save-to-contacts / suggestion chips), note,
+  reminder, then **"Color & categories" collapsed** to a one-line summary (color dot + category
+  chips; `_showStyle` expands it) — they change rarely.
 - `android/.../ReturnChip.kt` + `lib/data/return_chip.dart` (`MethodChannel("threadly/return_chip")`)
   — the optional **"back to Threadly" chip**: a draggable `TYPE_APPLICATION_OVERLAY` pill drawn over
   Google Messages after every handoff (`_handedOff` in the home screen, and `openSmsCompose`), and
@@ -239,6 +261,7 @@ flutter analyze                 # lint (must be clean; flutter_lints / analysis_
 flutter test                    # run all unit tests
 flutter test test/widget_test.dart --plain-name "normalizePhone"   # run tests by name
 flutter test test/due_date_test.dart   # the reminder date resolver
+flutter test test/command_test.dart    # Ask Threadly: forward text, contact matching
 flutter run                     # run on a connected device/emulator
 flutter build apk --debug       # verify the full Android native stack compiles
 ```
@@ -266,7 +289,8 @@ flutter build apk --debug       # verify the full Android native stack compiles
 
 `flutter analyze`, `flutter test`, and the debug APK build are the CI-equivalent checks and must
 pass. The unit tests cover only pure Dart (`test/widget_test.dart`: models; `test/due_date_test.dart`:
-reminder date resolution); everything platform-bound is verified by running the app.
+date resolution; `test/command_test.dart`: Ask Threadly's forward text and contact matching);
+everything platform-bound is verified by running the app.
 
 A **plugged-in Android device or emulator** is required to exercise the notification source,
 contact resolution, and the `sms:` handoff — macOS/Chrome/iOS targets can't. The conversation list

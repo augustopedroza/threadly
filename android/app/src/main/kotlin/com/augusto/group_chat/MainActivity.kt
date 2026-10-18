@@ -63,6 +63,23 @@ class MainActivity : FlutterActivity() {
                         call.argument<String>("id")?.let { ConversationSuggester.dismiss(this, it) }
                         result.success(null)
                     }
+                    "interpret" -> scope.launch {
+                        result.success(
+                            ConversationSuggester.interpret(
+                                call.argument<String>("title").orEmpty(),
+                                call.argument<Boolean>("isGroup") == true,
+                                call.argument<String>("command").orEmpty(),
+                                call.argument<List<String>>("categories").orEmpty(),
+                            )
+                        )
+                    }
+                    // The conversation's buffered messages, for picking what to
+                    // forward. Stays on the phone like the buffer itself.
+                    "recent" -> result.success(
+                        ConversationNotificationListener.recentMessages(
+                            this, call.argument<String>("id").orEmpty()
+                        ).map { mapOf("sender" to it.sender, "text" to it.text, "time" to it.time) }
+                    )
                     "saveContact" -> result.success(
                         openNewContact(
                             call.argument<String>("name").orEmpty(),
