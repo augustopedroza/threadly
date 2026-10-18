@@ -27,7 +27,9 @@ import kotlin.math.roundToInt
 
 /**
  * The "back to Threadly" chip: a small draggable pill drawn over Google
- * Messages after a handoff, so one tap returns to Threadly. (Back can't do it:
+ * Messages after a handoff — or after the user opens a conversation by
+ * tapping Google Messages' own notification ([showForNotificationTap]) — so
+ * one tap returns to Threadly. (Back can't do it:
  * GM's conversation screen always runs in GM's own task, so Back goes through
  * the GM inbox first.) Needs the "Display over other apps" permission, which
  * the user grants once in Settings; [show] is a no-op without it or when the
@@ -47,6 +49,29 @@ object ReturnChip {
 
     private var chip: View? = null
     private var screenOff: BroadcastReceiver? = null
+
+    /** The conversation a notification tap opened, and when: Threadly blinks
+     *  it (and offers suggestions) on the way back, like after a handoff. */
+    private var returnTarget: Pair<String, Long>? = null
+
+    /**
+     * The user tapped Google Messages' notification for [conversationId], so
+     * Messages is opening that thread: float the chip over it and remember
+     * the conversation. No-op (beyond remembering) without the overlay
+     * permission or with the chip turned off.
+     */
+    fun showForNotificationTap(ctx: Context, conversationId: String) {
+        returnTarget = conversationId to System.currentTimeMillis()
+        show(ctx)
+    }
+
+    /** Read-once: the conversation a recent notification tap opened, if any
+     *  (stale after the chip's own lifetime). */
+    fun consumeReturnTarget(): String? {
+        val t = returnTarget ?: return null
+        returnTarget = null
+        return t.first.takeIf { System.currentTimeMillis() - t.second < AUTO_HIDE_MS }
+    }
     private val handler = Handler(Looper.getMainLooper())
     private val autoHide = Runnable { hide() }
 

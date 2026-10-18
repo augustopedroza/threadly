@@ -94,7 +94,9 @@ class MainActivity : FlutterActivity() {
                         ReturnChip.openSettings(this)
                         result.success(null)
                     }
-                    "show" -> result.success(ReturnChip.show(this))                    "hide" -> {
+                    "show" -> result.success(ReturnChip.show(this))
+                    "consumeReturnTarget" -> result.success(ReturnChip.consumeReturnTarget())
+                    "hide" -> {
                         ReturnChip.hide()
                         result.success(null)
                     }

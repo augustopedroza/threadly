@@ -182,7 +182,13 @@ Mainline (notification-driven) pieces:
   `ThreadlySuggest`) carry ids/status/errors only — never message text.
 - `android/.../ReturnChip.kt` + `lib/data/return_chip.dart` (`MethodChannel("threadly/return_chip")`)
   — the optional **"back to Threadly" chip**: a draggable `TYPE_APPLICATION_OVERLAY` pill drawn over
-  Google Messages after every handoff (`_handedOff` in the home screen, and `openSmsCompose`). Exists
+  Google Messages after every handoff (`_handedOff` in the home screen, and `openSmsCompose`), and
+  when the user **taps one of GM's own notifications**: the listener's reason-carrying
+  `onNotificationRemoved` sees `REASON_CLICK` (vs a swipe or read-elsewhere) and calls
+  `ReturnChip.showForNotificationTap`, which also remembers the conversation (read-once
+  `consumeReturnTarget`, stale after the chip's 20 min). Threadly's `_afterReturn` — run on every
+  resume *and* after a cold start (the chip can launch Threadly fresh) — treats that like a handoff:
+  blink, suggestions, or the raw-number nickname offer (`_needsMappingPrompt`). Exists
   because Back can't return: GM's conversation screen runs in GM's own task (`singleTask`), so Back
   goes GM inbox → Threadly. Tap → Threadly as you left it; hidden on `MainActivity.onResume`, screen off, or after
   20 min; drag position remembered. Needs the user-granted `SYSTEM_ALERT_WINDOW` ("Display over other

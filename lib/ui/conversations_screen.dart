@@ -101,8 +101,12 @@ class _ConversationsScreenState extends State<ConversationsScreen>
   void initState() {
     super.initState();
     WidgetsBinding.instance.addObserver(this);
-    _load();
-    _refreshChipStatus();
+    // A cold start can itself be a return: the chip (shown after a Messages
+    // notification tap) launching Threadly fresh.
+    _load().then((_) async {
+      await _refreshChipStatus();
+      await _afterReturn(null, null);
+    });
   }
 
   @override
@@ -144,36 +148,49 @@ class _ConversationsScreenState extends State<ConversationsScreen>
       // Also re-reads the chip status: the user may have just granted the
       // overlay permission in Settings.
       await _refreshChipStatus();
-      if (!mounted || fromHandoff == null) return;
-      // Back from Messages (chip or Back alike): show where they were. Any
-      // prompt waits for the blink so it doesn't cover it.
-      _blink(fromHandoff.id);
-      // Ask the on-device model meanwhile (it only runs while Threadly is on
-      // screen, so not before now). Fresh copy if the conversation is listed.
-      final c = _conversations
-              .where((x) => x.id == fromHandoff.id)
-              .firstOrNull ??
-          fromHandoff;
-      final suggestion = _suggestDeferred.contains(c.id)
-          ? Future<Suggestion?>.value()
-          : _suggestFor(c);
-      await Future<void>.delayed(_Blink.duration);
-      final s = _returnOffer(c, await suggestion);
-      if (!mounted) return;
-      // One prompt per return, in this order: a suggestion (which also covers
-      // the raw-number nickname offer), the plain nickname offer, then the
-      // one-time chip offer.
-      if (s != null) {
-        _offerSuggestion(c, s);
-      } else if (pending != null) {
-        _offerNickname(pending);
-      } else {
-        final chip = _chipStatus;
-        if (chip != null && !chip.active && !chip.nudged) {
-          _maybeOfferReturnChip();
-        }
-      }
+      await _afterReturn(fromHandoff, pending);
     });
+  }
+
+  /// Back in Threadly from a conversation in Messages — opened from here
+  /// ([fromHandoff]) or by tapping Messages' own notification (the chip
+  /// remembers which, natively). Show where they were, then at most one
+  /// prompt. [pending] is a raw-number 1:1 due a nickname offer.
+  Future<void> _afterReturn(
+    Conversation? fromHandoff,
+    Conversation? pending,
+  ) async {
+    // Always consume, so a notification tap never lingers past a handoff.
+    final tappedId = await _chip.consumeReturnTarget();
+    final from = fromHandoff ??
+        _conversations.where((x) => x.id == tappedId).firstOrNull;
+    if (!mounted || from == null) return;
+    if (fromHandoff == null && _needsMappingPrompt(from)) pending = from;
+    // Show where they were. Any prompt waits for the blink so it doesn't
+    // cover it.
+    _blink(from.id);
+    // Ask the on-device model meanwhile (it only runs while Threadly is on
+    // screen, so not before now). Fresh copy if the conversation is listed.
+    final c = _conversations.where((x) => x.id == from.id).firstOrNull ?? from;
+    final suggestion = _suggestDeferred.contains(c.id)
+        ? Future<Suggestion?>.value()
+        : _suggestFor(c);
+    await Future<void>.delayed(_Blink.duration);
+    final s = _returnOffer(c, await suggestion);
+    if (!mounted) return;
+    // One prompt per return, in this order: a suggestion (which also covers
+    // the raw-number nickname offer), the plain nickname offer, then the
+    // one-time chip offer.
+    if (s != null) {
+      _offerSuggestion(c, s);
+    } else if (pending != null) {
+      _offerNickname(pending);
+    } else {
+      final chip = _chipStatus;
+      if (chip != null && !chip.active && !chip.nudged) {
+        _maybeOfferReturnChip();
+      }
+    }
   }
 
   /// The title to show: a raw-number 1:1 shows its contact name once saved
@@ -1103,11 +1120,17 @@ class _ConversationsScreenState extends State<ConversationsScreen>
   /// no saved contact and has no nickname yet (fix: add one — no more
   /// memorizing numbers). Groups get no prompt (see [_mappingPromptPending]).
   void _queueMappingPrompt(Conversation c) {
-    if (c.isGroup || _mappingPromptDeclined.contains(c.id)) return;
+    if (_needsMappingPrompt(c)) _mappingPromptPending = c;
+  }
+
+  /// A 1:1 shown only as a number (no contact, no nickname) that the user
+  /// hasn't declined naming this session.
+  bool _needsMappingPrompt(Conversation c) {
+    if (c.isGroup || _mappingPromptDeclined.contains(c.id)) return false;
     final hasContact = _contacts.phoneForName(c.title) != null ||
         _contacts.nameForPhone(c.title) != null;
     final hasNickname = _annotations[c.id]?.name?.isNotEmpty == true;
-    if (!hasContact && !hasNickname) _mappingPromptPending = c;
+    return !hasContact && !hasNickname;
   }
 
   /// A 1:1 that's just a raw number: after the user comes back from reading it

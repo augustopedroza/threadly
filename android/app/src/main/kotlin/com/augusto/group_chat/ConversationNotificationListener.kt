@@ -46,13 +46,25 @@ class ConversationNotificationListener : NotificationListenerService() {
         persistActive(this)
     }
 
-    override fun onNotificationRemoved(sbn: StatusBarNotification?) {
+    // The reason-carrying overload (API 26+, our minSdk); the shorter ones
+    // aren't called once this is overridden.
+    override fun onNotificationRemoved(
+        sbn: StatusBarNotification?,
+        rankingMap: RankingMap?,
+        reason: Int,
+    ) {
         sbn ?: return
         if (sbn.packageName != MESSAGES_PKG) return
         val id = conversationId(sbn) ?: return
         // Removal in Google Messages means the user has seen it: now read.
         activeIds.remove(id)
         persistActive(this)
+        // Tapped (not swiped or read elsewhere): Messages is opening that
+        // thread, so put Threadly one tap away over it.
+        val summary = (sbn.notification?.flags ?: 0) and Notification.FLAG_GROUP_SUMMARY != 0
+        if (reason == REASON_CLICK && !summary) {
+            ReturnChip.showForNotificationTap(this, id)
+        }
     }
 
     /** Parse and persist a single Google Messages notification. */
