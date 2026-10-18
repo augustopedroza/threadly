@@ -54,6 +54,10 @@ object ReturnChip {
      *  it (and offers suggestions) on the way back, like after a handoff. */
     private var returnTarget: Pair<String, Long>? = null
 
+    /** When the chip was last tapped: a notification tap only counts if the
+     *  user then came back *through the chip*, not via the launcher later. */
+    private var chipTappedAt = 0L
+
     /**
      * The user tapped Google Messages' notification for [conversationId], so
      * Messages is opening that thread: float the chip over it and remember
@@ -65,12 +69,17 @@ object ReturnChip {
         show(ctx)
     }
 
-    /** Read-once: the conversation a recent notification tap opened, if any
-     *  (stale after the chip's own lifetime). */
-    fun consumeReturnTarget(): String? {
+    /**
+     * Read-once: `{id, at}` for the conversation a notification tap opened,
+     * if the user came back through the chip since (and within the chip's
+     * lifetime). Any resume clears it, so it can't resurface later.
+     */
+    fun consumeReturnTarget(): Map<String, Any>? {
         val t = returnTarget ?: return null
         returnTarget = null
-        return t.first.takeIf { System.currentTimeMillis() - t.second < AUTO_HIDE_MS }
+        val now = System.currentTimeMillis()
+        if (chipTappedAt < t.second || now - t.second > AUTO_HIDE_MS) return null
+        return mapOf("id" to t.first, "at" to t.second)
     }
     private val handler = Handler(Looper.getMainLooper())
     private val autoHide = Runnable { hide() }
@@ -186,6 +195,7 @@ object ReturnChip {
     /** Bring Threadly to the front, exactly as the launcher would. */
     private fun open(app: Context) {
         hide()
+        chipTappedAt = System.currentTimeMillis()
         val intent = app.packageManager.getLaunchIntentForPackage(app.packageName)
             ?: return
         app.startActivity(intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK))

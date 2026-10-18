@@ -120,7 +120,10 @@ Mainline (notification-driven) pieces:
   Back) refreshes the list **in place** (spinner only on first load, so scroll/tab survive) and
   **blinks** the conversation you came from (`_Blink`: scrolls it into view only if off screen,
   two primary-color pulses; a row not yet built — far off screen after a reorder — isn't
-  reached). Any prompt waits for the blink. After a
+  reached). `_Blink` is **keyed by conversation id** — list children otherwise match by position,
+  and a running pulse would land on whatever row a re-sort put there. "Came from" = whichever is
+  **newer**: the last handoff (expires after 20 min, `_returnWindow`) or a GM notification tap
+  (counted only if the user then came back *through the chip*). Any prompt waits for the blink. After a
   handoff to a raw-number 1:1 (no contact, no nickname), returning to Threadly shows a **mapping
   prompt** (`_queueMappingPrompt` → resume) offering the organize sheet; "don't ask" declines are
   in-memory (per session). Groups deliberately get no such prompt — see the constraint note below.
@@ -130,11 +133,16 @@ Mainline (notification-driven) pieces:
   and fields already set are dropped. If anything's left, `_offerSuggestion` replaces those prompts
   (one prompt per return): editable nickname / note, "Add to <category>" and "Remind me <when>"
   checkboxes (the latter notes when it replaces an existing reminder; saving schedules it via
-  `ReminderService`), "Save <name> to contacts" for raw numbers, Not now (session) / Don't suggest
-  for this one (permanent, native). The organize sheet always shows tap-to-apply suggestion chips
-  (`_suggestionChips`, `force: true`); its request starts once in `_organize`, not in the builder.
+  `ReminderService`), Not now (session) / Don't suggest for this one (permanent, native). The
+  organize sheet always shows tap-to-apply suggestion chips (`_suggestionChips`, `force: true`);
+  its request starts once in `_organize`, not in the builder. **Save to contacts**: for a
+  raw-number 1:1, both sheets show `_SaveContactButton` under the name field, using whatever name
+  is typed there (AI-suggested or not; disabled while empty). In the return prompt it also saves
+  the note/category/reminder, but not the name as a nickname (it'd duplicate the contact name the
+  row then shows).
   `setAnnotation` replaces the whole row, so saves carry over the other fields. A raw-number 1:1
-  shows its contact name once saved (`_displayTitle`).
+  shows its contact name once saved (`_displayTitle`); a nickname equal to the shown title is
+  hidden (e.g. kept after saving the contact under the same name).
   Swipe-forget clears the conversation's annotation, memberships, reminder, and saved roster.
 - `lib/ui/new_group_screen.dart` — pick people (`lib/ui/people_picker.dart`, a searchable
   multi-select) + optional name/category → `launchGroupText` + store a
@@ -177,8 +185,9 @@ Mainline (notification-driven) pieces:
   (`BACKGROUND_USE_BLOCKED`, so never from the listener), per-app quota (`BUSY`/battery), supported
   devices only (Pixel 9/10 and some flagships), and a one-time model download (~3 min on the test
   Pixel 10 Pro Fold) triggered by the first call when `DOWNLOADABLE`. Every failure = no suggestion.
-  "Save to contacts" opens the system `Intents.Insert` editor prefilled — the user saves (and picks
-  the account) there, so Threadly stays **read-only on contacts** (no WRITE_CONTACTS). Logs (tag
+  "Save to contacts" (`saveContact`) opens the system `Intents.Insert` editor prefilled — the user
+  saves (and picks the account) there, so Threadly stays **read-only on contacts** (no
+  WRITE_CONTACTS); Back from the editor returns to Threadly with nothing saved. Logs (tag
   `ThreadlySuggest`) carry ids/status/errors only — never message text.
 - `android/.../ReturnChip.kt` + `lib/data/return_chip.dart` (`MethodChannel("threadly/return_chip")`)
   — the optional **"back to Threadly" chip**: a draggable `TYPE_APPLICATION_OVERLAY` pill drawn over

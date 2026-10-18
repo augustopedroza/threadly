@@ -51,11 +51,17 @@ class ReturnChipService {
     }
   }
 
-  /// The conversation the user just opened by tapping Google Messages' own
-  /// notification (read-once), so the return can blink it like a handoff.
-  Future<String?> consumeReturnTarget() async {
+  /// The conversation the user opened by tapping Google Messages' own
+  /// notification, and when — only if they came back through the chip since
+  /// (read-once). The return blinks it like a handoff.
+  Future<({String id, DateTime at})?> consumeReturnTarget() async {
     try {
-      return await _ch.invokeMethod<String>('consumeReturnTarget');
+      final m =
+          await _ch.invokeMapMethod<String, Object?>('consumeReturnTarget');
+      final id = m?['id'];
+      final at = m?['at'];
+      if (id is! String || at is! int) return null;
+      return (id: id, at: DateTime.fromMillisecondsSinceEpoch(at));
     } on PlatformException {
       return null;
     }

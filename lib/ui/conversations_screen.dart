@@ -42,6 +42,11 @@ class _ConversationsScreenState extends State<ConversationsScreen>
   /// its row blinks on the way back (chip or Back), and that's the moment to
   /// offer the return chip once (if it isn't set up yet).
   Conversation? _lastHandoff;
+  DateTime? _lastHandoffAt;
+
+  /// How long a handoff still counts as "where you came from" — the chip's
+  /// own lifetime, so coming back much later doesn't blink an old row.
+  static const _returnWindow = Duration(minutes: 20);
 
   /// The row currently blinking (see [_blink]) and a counter that restarts
   /// the pulse when the same row blinks again.
@@ -142,13 +147,19 @@ class _ConversationsScreenState extends State<ConversationsScreen>
     if (state != AppLifecycleState.resumed) return;
     final pending = _mappingPromptPending;
     _mappingPromptPending = null;
-    final fromHandoff = _lastHandoff;
+    final handoffAt = _lastHandoffAt;
+    final fromHandoff = (handoffAt != null &&
+            DateTime.now().difference(handoffAt) < _returnWindow)
+        ? _lastHandoff
+        : null;
     _lastHandoff = null;
+    _lastHandoffAt = null;
     _load(reloadContacts: true).then((_) async {
       // Also re-reads the chip status: the user may have just granted the
       // overlay permission in Settings.
       await _refreshChipStatus();
-      await _afterReturn(fromHandoff, pending);
+      await _afterReturn(fromHandoff, fromHandoff != null ? pending : null,
+          handoffAt: handoffAt);
     });
   }
 
@@ -158,20 +169,32 @@ class _ConversationsScreenState extends State<ConversationsScreen>
   /// prompt. [pending] is a raw-number 1:1 due a nickname offer.
   Future<void> _afterReturn(
     Conversation? fromHandoff,
-    Conversation? pending,
-  ) async {
-    // Always consume, so a notification tap never lingers past a handoff.
-    final tappedId = await _chip.consumeReturnTarget();
-    final from = fromHandoff ??
-        _conversations.where((x) => x.id == tappedId).firstOrNull;
-    if (!mounted || from == null) return;
-    if (fromHandoff == null && _needsMappingPrompt(from)) pending = from;
+    Conversation? pending, {
+    DateTime? handoffAt,
+  }) async {
+    // Always consume, so a notification tap never lingers. Whichever came
+    // last wins: a notification tapped in Messages *after* a handoff is
+    // where the user actually was.
+    final tapped = await _chip.consumeReturnTarget();
+    var from = fromHandoff;
+    if (tapped != null &&
+        (fromHandoff == null ||
+            handoffAt == null ||
+            tapped.at.isAfter(handoffAt))) {
+      final t = _conversations.where((x) => x.id == tapped.id).firstOrNull;
+      if (t != null) {
+        from = t;
+        pending = _needsMappingPrompt(t) ? t : null;
+      }
+    }
+    final back = from;
+    if (!mounted || back == null) return;
     // Show where they were. Any prompt waits for the blink so it doesn't
     // cover it.
-    _blink(from.id);
+    _blink(back.id);
     // Ask the on-device model meanwhile (it only runs while Threadly is on
     // screen, so not before now). Fresh copy if the conversation is listed.
-    final c = _conversations.where((x) => x.id == from.id).firstOrNull ?? from;
+    final c = _conversations.where((x) => x.id == back.id).firstOrNull ?? back;
     final suggestion = _suggestDeferred.contains(c.id)
         ? Future<Suggestion?>.value()
         : _suggestFor(c);
@@ -299,23 +322,29 @@ class _ConversationsScreenState extends State<ConversationsScreen>
                 if (person != null) ...[
                   const SizedBox(height: 16),
                   Text('This looks like $person.'),
-                  const SizedBox(height: 8),
-                  OutlinedButton.icon(
-                    onPressed: () => Navigator.pop(ctx, 'contact'),
-                    icon: const Icon(Icons.person_add_alt_1_outlined),
-                    label: Text('Save $person to contacts'),
-                  ),
                 ],
-                if (s.nickname != null) ...[
+                // A raw number always gets the name field: whatever's typed
+                // there can become a contact.
+                if (s.nickname != null || number != null) ...[
                   const SizedBox(height: 16),
                   TextField(
                     controller: nickname,
-                    decoration: const InputDecoration(
-                      labelText: 'Nickname (shown as a subtitle)',
-                      border: OutlineInputBorder(),
+                    textCapitalization: number != null
+                        ? TextCapitalization.words
+                        : TextCapitalization.sentences,
+                    decoration: InputDecoration(
+                      labelText: number != null
+                          ? 'Name or nickname'
+                          : 'Nickname (shown as a subtitle)',
+                      border: const OutlineInputBorder(),
                     ),
                   ),
                 ],
+                if (number != null)
+                  _SaveContactButton(
+                    name: nickname,
+                    onPressed: () => Navigator.pop(ctx, 'contact'),
+                  ),
                 if (s.note != null) ...[
                   const SizedBox(height: 16),
                   TextField(
@@ -383,43 +412,52 @@ class _ConversationsScreenState extends State<ConversationsScreen>
     nickname.dispose();
     note.dispose();
     if (!mounted) return;
+    // Save what's checked/filled. "Save to contacts" saves the same, except
+    // the name goes to the contact instead of the nickname (it'd duplicate
+    // the contact name the row shows once saved).
+    Future<void> save({required bool nicknameToo}) async {
+      final ann = _annotations[c.id];
+      final newName = nicknameToo && name.isNotEmpty ? name : null;
+      final remindAtMs = (remind && remindAt != null)
+          ? remindAt.millisecondsSinceEpoch
+          : ann?.remindAtMs;
+      if (newName != null ||
+          noteText.isNotEmpty ||
+          remindAtMs != ann?.remindAtMs) {
+        // Keep the rest of the annotation: setAnnotation replaces the row.
+        await _store.setAnnotation(c.id,
+            name: newName ?? ann?.name,
+            color: ann?.color,
+            note: noteText.isNotEmpty ? noteText : ann?.note,
+            remindAtMs: remindAtMs);
+      }
+      if (remind && remindAt != null) {
+        await _reminders.ensurePermission();
+        final shownName = name.isNotEmpty ? name : (ann?.name ?? '');
+        await _reminders.schedule(
+          c.id,
+          title: shownName.isNotEmpty ? shownName : _displayTitle(c),
+          body: s.remindWhat ??
+              (noteText.isNotEmpty
+                  ? noteText
+                  : 'You asked to be reminded about this conversation.'),
+          when: remindAt,
+        );
+      }
+      if (addCategory && category != null) {
+        await _store.setMembership(category.id, c.id, true);
+      }
+      _load();
+    }
+
     switch (choice) {
       case 'contact':
+        await save(nicknameToo: false);
         // The contacts app takes it from here; the name shows once saved
         // (contacts reload when Threadly resumes).
-        await _suggest.saveContact(person!, number!);
+        await _suggest.saveContact(name, number!);
       case 'save':
-        final ann = _annotations[c.id];
-        final remindAtMs = (remind && remindAt != null)
-            ? remindAt.millisecondsSinceEpoch
-            : ann?.remindAtMs;
-        if (name.isNotEmpty ||
-            noteText.isNotEmpty ||
-            remindAtMs != ann?.remindAtMs) {
-          // Keep the rest of the annotation: setAnnotation replaces the row.
-          await _store.setAnnotation(c.id,
-              name: name.isNotEmpty ? name : ann?.name,
-              color: ann?.color,
-              note: noteText.isNotEmpty ? noteText : ann?.note,
-              remindAtMs: remindAtMs);
-        }
-        if (remind && remindAt != null) {
-          await _reminders.ensurePermission();
-          final shownName = name.isNotEmpty ? name : (ann?.name ?? '');
-          await _reminders.schedule(
-            c.id,
-            title: shownName.isNotEmpty ? shownName : _displayTitle(c),
-            body: s.remindWhat ??
-                (noteText.isNotEmpty
-                    ? noteText
-                    : 'You asked to be reminded about this conversation.'),
-            when: remindAt,
-          );
-        }
-        if (addCategory && category != null) {
-          await _store.setMembership(category.id, c.id, true);
-        }
-        _load();
+        await save(nicknameToo: true);
       case 'never':
         await _suggest.dismiss(c.id);
       default: // "Not now" or dismissed: ask again next session.
@@ -447,6 +485,7 @@ class _ConversationsScreenState extends State<ConversationsScreen>
   void _handedOff(Conversation c) {
     _queueMappingPrompt(c);
     _lastHandoff = c;
+    _lastHandoffAt = DateTime.now();
     _chip.show();
   }
 
@@ -862,7 +901,10 @@ class _ConversationsScreenState extends State<ConversationsScreen>
     final ann = _annotations[c.id];
     final photo = c.isGroup ? null : _contacts.photoForTitle(c.title);
     final unread = _isUnread(c);
-    final hasName = ann?.name?.isNotEmpty == true;
+    // A nickname that just repeats the title (e.g. kept after saving the
+    // number as a contact with the same name) adds nothing: hide it.
+    final hasName = ann?.name?.isNotEmpty == true &&
+        ann!.name!.trim().toLowerCase() != _displayTitle(c).trim().toLowerCase();
     final hasNote = ann?.note?.isNotEmpty == true;
     final preview = c.preview;
     final chips = [
@@ -882,7 +924,7 @@ class _ConversationsScreenState extends State<ConversationsScreen>
         ),
       if (hasName)
         Text(
-          ann!.name!,
+          ann.name!,
           maxLines: 1,
           overflow: TextOverflow.ellipsis,
           style: const TextStyle(fontWeight: FontWeight.w600),
@@ -908,7 +950,10 @@ class _ConversationsScreenState extends State<ConversationsScreen>
           ),
         ),
     ];
+    // Keyed: list children match by key, not position, so a running pulse
+    // stays with its conversation when a refresh re-sorts the list.
     return _Blink(
+      key: ValueKey('row-${c.id}'),
       trigger: c.id == _blinkId ? _blinkSeq : 0,
       child: Dismissible(
       key: ValueKey('conv-${c.id}'),
@@ -1361,7 +1406,7 @@ class _ConversationsScreenState extends State<ConversationsScreen>
 /// (only if it isn't already, so the list otherwise keeps its place) and
 /// pulses it twice with the theme's primary color.
 class _Blink extends StatefulWidget {
-  const _Blink({required this.trigger, required this.child});
+  const _Blink({super.key, required this.trigger, required this.child});
 
   static const duration = Duration(milliseconds: 1100);
 
@@ -1431,6 +1476,38 @@ class _BlinkState extends State<_Blink> with SingleTickerProviderStateMixin {
         child: child,
       ),
       child: widget.child,
+    );
+  }
+}
+
+/// "Save to contacts" for a raw-number conversation, using the name typed in
+/// [name] (enabled once it's non-empty). Opens the system new-contact screen
+/// prefilled; Threadly itself never writes contacts.
+class _SaveContactButton extends StatelessWidget {
+  const _SaveContactButton({required this.name, required this.onPressed});
+
+  final TextEditingController name;
+  final VoidCallback onPressed;
+
+  @override
+  Widget build(BuildContext context) {
+    return ValueListenableBuilder<TextEditingValue>(
+      valueListenable: name,
+      builder: (context, value, _) {
+        final typed = value.text.trim();
+        return Align(
+          alignment: Alignment.centerLeft,
+          child: TextButton.icon(
+            onPressed: typed.isEmpty ? null : onPressed,
+            icon: const Icon(Icons.person_add_alt_1_outlined),
+            label: Text(
+              typed.isEmpty ? 'Save to contacts' : 'Save “$typed” to contacts',
+              maxLines: 1,
+              overflow: TextOverflow.ellipsis,
+            ),
+          ),
+        );
+      },
     );
   }
 }
@@ -1531,7 +1608,6 @@ class _OrganizeSheetState extends State<_OrganizeSheet> {
     final note = s.note;
     final category =
         _categories.where((c) => c.name == s.category).firstOrNull;
-    final person = widget.rawNumber != null ? nickname : null;
     final chips = <Widget>[
       if (nickname != null && _name.text.trim() != nickname)
         ActionChip(
@@ -1571,14 +1647,6 @@ class _OrganizeSheetState extends State<_OrganizeSheet> {
           label: Text('Add to ${category.name}',
               maxLines: 1, overflow: TextOverflow.ellipsis),
           onPressed: () => _toggleCategory(category, true),
-        ),
-      if (person != null)
-        ActionChip(
-          avatar: const Icon(Icons.person_add_alt_1_outlined, size: 18),
-          label: Text('Save $person to contacts',
-              maxLines: 1, overflow: TextOverflow.ellipsis),
-          onPressed: () =>
-              widget.suggestService.saveContact(person, widget.rawNumber!),
         ),
     ];
     if (chips.isEmpty) return const SizedBox.shrink();
@@ -1734,6 +1802,15 @@ class _OrganizeSheetState extends State<_OrganizeSheet> {
                 isDense: true,
               ),
             ),
+            // A raw number: whatever name is in the field can become a
+            // contact (the system editor opens prefilled; the user saves
+            // there).
+            if (widget.rawNumber != null)
+              _SaveContactButton(
+                name: _name,
+                onPressed: () => widget.suggestService
+                    .saveContact(_name.text.trim(), widget.rawNumber!),
+              ),
             _suggestionChips(),
             const SizedBox(height: 12),
             TextField(
