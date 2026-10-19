@@ -3,6 +3,7 @@ import 'package:flutter/material.dart';
 import '../data/notifications.dart';
 import '../format.dart';
 import 'later_picker.dart';
+import 'undo_snack_bar.dart';
 
 /// One conversation's reminder, as the reminders screen shows it.
 typedef ReminderEntry = ({
@@ -58,18 +59,12 @@ class _RemindersScreenState extends State<RemindersScreen> {
     ScaffoldMessenger.of(context)
       ..hideCurrentSnackBar()
       ..showSnackBar(
-        SnackBar(
-          content: Text('Reminder for ${e.title} cleared'),
-          action: SnackBarAction(
-            label: 'Undo',
-            onPressed: () async {
+        undoSnackBar('Reminder for ${e.title} cleared', () async {
               // Restore it as it was — a past one comes back as due (nothing
               // is re-scheduled for a time that's gone).
               await widget.setReminder(e.conversation, e.when);
               if (mounted) setState(() {});
-            },
-          ),
-        ),
+        }),
       );
   }
 

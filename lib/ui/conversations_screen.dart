@@ -17,6 +17,7 @@ import 'category_manager_screen.dart';
 import 'later_picker.dart';
 import 'new_group_screen.dart';
 import 'reminders_screen.dart';
+import 'undo_snack_bar.dart';
 
 /// Bridge-free home: a pure organizer + launcher over Google Messages.
 ///
@@ -697,18 +698,12 @@ class _ConversationsScreenState extends State<ConversationsScreen>
     _store.setReplyDone(c.id, at);
     ScaffoldMessenger.of(context)
       ..hideCurrentSnackBar()
-      ..showSnackBar(SnackBar(
-        content: Text('${_displayTitle(c)}: done'),
-        action: SnackBarAction(
-          label: 'Undo',
-          onPressed: () {
-            _store.setReplyDone(c.id, before.doneAtMs);
-            if (mounted) {
-              setState(() => _replyStates = {..._replyStates, c.id: before});
-            }
-          },
-        ),
-      ));
+      ..showSnackBar(undoSnackBar('${_displayTitle(c)}: done', () {
+        _store.setReplyDone(c.id, before.doneAtMs);
+        if (mounted) {
+          setState(() => _replyStates = {..._replyStates, c.id: before});
+        }
+      }));
   }
 
   /// The user replied to [c] through Threadly (Ask Threadly opened the
@@ -1380,18 +1375,15 @@ class _ConversationsScreenState extends State<ConversationsScreen>
     if (!mounted) return;
     ScaffoldMessenger.of(context)
       ..hideCurrentSnackBar()
-      ..showSnackBar(SnackBar(
-        content: Text('Saved for later: ${formatDue(when)}'),
-        action: SnackBarAction(
-          label: 'Undo',
-          onPressed: () => _setReminder(
+      ..showSnackBar(undoSnackBar(
+        'Saved for later: ${formatDue(when)}',
+        () => _setReminder(
             c,
             before != null &&
                     DateTime.fromMillisecondsSinceEpoch(before)
                         .isAfter(DateTime.now())
                 ? DateTime.fromMillisecondsSinceEpoch(before)
                 : null,
-          ),
         ),
       ));
   }
