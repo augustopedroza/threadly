@@ -173,7 +173,12 @@ Mainline (notification-driven) pieces:
 - `lib/data/reminders.dart` — `ReminderService` over `flutter_local_notifications`: the user-set
   per-conversation reminder notifications (the only notifications Threadly posts). One reminder per
   conversation (stable FNV-1a notification id from the conversation id, so re-scheduling replaces).
-  Exact alarm when "Alarms & reminders" is allowed, else inexact; asks for the Android 13+
+  Exact alarm when "Alarms & reminders" is allowed, else inexact — on Android 14+ that's off by
+  default, and inexact means **a 1-hour window** (`dumpsys alarm` shows `window=+1h`). So after any
+  reminder is saved, `offerExactReminders` (`lib/ui/exact_reminders_prompt.dart`, once per run)
+  offers to open that settings page, and the home screen's `_refreshReminderSchedule` re-schedules
+  every upcoming reminder whenever exact access changes (and once per run) — revoking it also makes
+  Android cancel exact alarms. Asks for the Android 13+
   `POST_NOTIFICATIONS` runtime permission on save; survives reboots via the plugin's boot receiver.
   Set/cleared in `_OrganizeSheet`, shown as an alarm line on the tile (error-tinted once elapsed),
   cancelled on swipe-forget. Requires core-library desugaring (see `android/app/build.gradle.kts`).

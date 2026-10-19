@@ -100,6 +100,20 @@ class ReminderService {
     return await android.requestNotificationsPermission() ?? false;
   }
 
+  /// Whether reminders fire at the exact minute: the user allowed "Alarms &
+  /// reminders" (off by default on Android 14+). Without it Android may
+  /// deliver a reminder up to an hour late.
+  Future<bool> canScheduleExact() async {
+    await init();
+    return await _android?.canScheduleExactNotifications() ?? false;
+  }
+
+  /// Open the system "Alarms & reminders" page for Threadly.
+  Future<void> requestExact() async {
+    await init();
+    await _android?.requestExactAlarmsPermission();
+  }
+
   /// Schedule (or replace) the reminder for [conversationId]. Exact when the
   /// user has allowed "Alarms & reminders", otherwise inexact (may be delayed
   /// a few minutes by the system). A [when] in the past is ignored.

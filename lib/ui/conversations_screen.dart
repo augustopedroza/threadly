@@ -14,6 +14,7 @@ import '../models/command.dart';
 import '../models/due_date.dart';
 import '../models/reply.dart';
 import 'category_manager_screen.dart';
+import 'exact_reminders_prompt.dart';
 import 'later_picker.dart';
 import 'new_group_screen.dart';
 import 'reminders_screen.dart';
@@ -458,6 +459,7 @@ class _ConversationsScreenState extends State<ConversationsScreen>
                   : 'You asked to be reminded about this conversation.'),
           when: remindAt,
         );
+        if (mounted) await offerExactReminders(context, _reminders);
       }
       if (addCategory && category != null) {
         await _store.setMembership(category.id, c.id, true);
@@ -633,6 +635,7 @@ class _ConversationsScreenState extends State<ConversationsScreen>
       _loadedOnce = true;
     });
     _judgeReplies();
+    _refreshReminderSchedule();
   }
 
   /// Conversations in the "To reply" tab, newest first.
@@ -1361,8 +1364,42 @@ class _ConversationsScreenState extends State<ConversationsScreen>
                 : 'You asked to be reminded about this conversation.'),
         when: when,
       );
+      if (mounted) await offerExactReminders(context, _reminders);
     }
     await _load();
+  }
+
+  /// Exact-alarm access as of the last full re-schedule (null: not yet).
+  bool? _exactAsOf;
+
+  /// Re-schedule every upcoming reminder when exact-alarm access changed
+  /// (and once per run): ones saved while it was off sit in Android's
+  /// hour-wide window, and revoking it cancels exact alarms outright.
+  Future<void> _refreshReminderSchedule() async {
+    final exact = await _reminders.canScheduleExact();
+    if (exact == _exactAsOf) return;
+    _exactAsOf = exact;
+    final now = DateTime.now();
+    final byId = {for (final c in _conversations) c.id: c};
+    for (final ann in _annotations.values) {
+      final ms = ann.remindAtMs;
+      if (ms == null) continue;
+      final when = DateTime.fromMillisecondsSinceEpoch(ms);
+      if (!when.isAfter(now)) continue;
+      final c = byId[ann.threadKey];
+      final nickname = ann.name ?? '';
+      await _reminders.schedule(
+        ann.threadKey,
+        title: nickname.isNotEmpty
+            ? nickname
+            : (c != null ? _displayTitle(c) : 'Conversation reminder'),
+        body: ann.remindWhat ??
+            ((ann.note?.isNotEmpty ?? false)
+                ? ann.note
+                : 'You asked to be reminded about this conversation.'),
+        when: when,
+      );
+    }
   }
 
   /// "Save for later" (swipe right): pick a time, set the reminder, and
@@ -2469,6 +2506,7 @@ class _OrganizeSheetState extends State<_OrganizeSheet> {
                 : 'You asked to be reminded about this conversation.'),
         when: when,
       );
+      if (mounted) await offerExactReminders(context, _reminders);
     } else {
       // No reminder, or it was cleared/elapsed: drop any pending one.
       await _reminders.cancel(widget.conversation.id);
