@@ -1,4 +1,5 @@
-/// Tiny, dependency-free date/time formatting for the thread list and bubbles.
+/// Tiny, dependency-free date/time formatting for the conversation list and
+/// reminders.
 ///
 /// Avoids pulling in `intl` for what amounts to a handful of US-style strings.
 library;
@@ -34,7 +35,8 @@ String formatListTime(DateTime when) {
   return when.year == now.year ? md : '$md, ${when.year}';
 }
 
-/// Per-bubble stamp: the clock, prefixed with the date when it isn't today.
+/// A reminder's stamp on a list row: the clock, prefixed with the date when it
+/// isn't today.
 String formatMessageTime(DateTime when) {
   final now = DateTime.now();
   final today = DateTime(now.year, now.month, now.day);

@@ -83,7 +83,7 @@ Messages store, so the core features aren't possible there.
 |---|---|
 | Notification access | Learn about conversations from Google Messages' notifications |
 | Contacts (read-only) | Show names and photos instead of phone numbers |
-| Notifications, alarms & reminders | The reminders you set on conversations |
+| Notifications, alarms & reminders | The reminders you set on conversations. After you save one, Threadly asks once to allow "Alarms & reminders" so they arrive at the minute you set; without it, Android may deliver them up to an hour late |
 | Display over other apps (optional) | The floating "back to Threadly" button, shown over Google Messages after you open a chat from Threadly or from a notification |
 
 No SMS permissions, no internet access, and no permission to change your
@@ -102,13 +102,13 @@ reminders, recent messages) stays on the device.
 
 Every push to `main` builds a signed APK on GitHub Actions: open the run under
 **Actions → Android** and download **threadly-apk** from its Artifacts.
-Tagged versions (`v1.2.0`) are also published under **Releases** with the APK
+Tagged versions (`v1.2.2`) are also published under **Releases** with the APK
 attached. Each build installs over the previous one.
 
 To cut a release:
 
 ```bash
-git tag v1.2.0 && git push origin v1.2.0
+git tag v1.2.2 && git push origin v1.2.2
 ```
 
 ## Build and run

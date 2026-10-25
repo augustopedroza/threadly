@@ -157,7 +157,9 @@ Mainline (notification-driven) pieces:
   `setAnnotation` replaces the whole row, so saves carry over the other fields. A raw-number 1:1
   shows its contact name once saved (`_displayTitle`); a nickname equal to the shown title is
   hidden (e.g. kept after saving the contact under the same name).
-  Swipe-forget clears the conversation's annotation, memberships, reminder, and saved roster.
+  **Forget conversation** (organize sheet, confirmed: `_forgetFromSheet` → `_forget`) drops it
+  natively (`forget(id)`, which also clears its 10-message buffer) and clears its annotation,
+  reminder, category memberships, saved roster, and reply state.
 - `lib/ui/new_group_screen.dart` — pick people (`lib/ui/people_picker.dart`, a searchable
   multi-select) + optional name/category → `launchGroupText` + store a
   **pending group**, applied to the real conversation when it appears.
@@ -181,7 +183,7 @@ Mainline (notification-driven) pieces:
   Android cancel exact alarms. Asks for the Android 13+
   `POST_NOTIFICATIONS` runtime permission on save; survives reboots via the plugin's boot receiver.
   Set/cleared in `_OrganizeSheet`, shown as an alarm line on the tile (error-tinted once elapsed),
-  cancelled on swipe-forget. Requires core-library desugaring (see `android/app/build.gradle.kts`).
+  cancelled on Forget conversation. Requires core-library desugaring (see `android/app/build.gradle.kts`).
   Each reminder stores **what it's for** (`remind_what`, e.g. "Big move at home") — the
   notification text and the Reminders screen subtitle; `setAnnotation` keeps it unless given, and
   clears it with the reminder. The payload is JSON `{id, title, body}` (`ReminderPayload`; older
@@ -265,6 +267,12 @@ Mainline (notification-driven) pieces:
   SharedPreferences, not SQLite.
 - `lib/models/category.dart` — `Category`, `ConversationAnnotation`, `Person`, `pluralPeople`, the
   color palette. `lib/models/phone.dart` — `normalizePhone(raw)` (digits-only, last 10).
+- `lib/format.dart` — dependency-free US-style date/time strings (no `intl`): `formatListTime`
+  (row recency), `formatMessageTime` (the tile's alarm line), `formatDue` ("today at 6:00 PM" in
+  sheets, snack bars, pickers, the Reminders screen), `formatClock`.
+- `lib/ui/undo_snack_bar.dart` — `undoSnackBar(message, onUndo)`, used by every "… · Undo" bar
+  (Done, Save for later, clearing a reminder). Flutter keeps a snack bar with an action up until
+  tapped (`SnackBar.persist` defaults to true then), so this one sets `persist: false` and 6 s.
 - `lib/main.dart` — just `main()` (initializes reminders) and `ThreadlyApp` (theme, home).
 
 ### SQLite schema (organizer.db, version 9)
@@ -329,15 +337,17 @@ flutter build apk --debug       # verify the full Android native stack compiles
 
 `flutter analyze`, `flutter test`, and the debug APK build are the CI-equivalent checks and must
 pass. The unit tests cover only pure Dart (`test/widget_test.dart`: models; `test/due_date_test.dart`:
-date resolution; `test/command_test.dart`: Ask Threadly's forward text and contact matching);
+date resolution; `test/command_test.dart`: Ask Threadly's forward text and contact matching;
+`test/later_test.dart`: save-for-later / snooze presets; `test/reply_test.dart`: To reply rules);
 everything platform-bound is verified by running the app.
 
 A **plugged-in Android device or emulator** is required to exercise the notification source,
 contact resolution, and the `sms:` handoff — macOS/Chrome/iOS targets can't. The conversation list
 only populates once **notification access** is granted and Google Messages posts notifications; the
 Pixel API 35 emulator has Google Messages with seeded conversations, so the list, unread dots,
-recency, categories, search, swipe-delete, and the handoff are all testable there. Grant access fast
-via `adb shell cmd notification allow_listener com.augusto.group_chat/com.augusto.group_chat.ConversationNotificationListener`.
+recency, categories, search, the save-for-later and Done swipes, forgetting, and the handoff are
+all testable there. Grant access fast via
+`adb shell cmd notification allow_listener com.augusto.group_chat/com.augusto.group_chat.ConversationNotificationListener`.
 Real **group detection** and **contact photos** need a real device (the emulator's synthetic
 notifications/contacts lack those signals). The app's SQLite-backed organizing works fully on an
 emulator, no account needed. **AI suggestions** need a Gemini Nano device (not the emulator): test

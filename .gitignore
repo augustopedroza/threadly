@@ -33,8 +33,6 @@ migrate_working_dir/
 /build/
 /coverage/
 
-# Dev-only bridge credentials injected via --dart-define-from-file — never commit
-/bridge.json
 
 # Symbolication related
 app.*.symbols
