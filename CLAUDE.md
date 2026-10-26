@@ -260,7 +260,11 @@ Mainline (notification-driven) pieces:
   blink, suggestions, or the raw-number nickname offer (`_needsMappingPrompt`). Exists
   because Back can't return: GM's conversation screen runs in GM's own task (`singleTask`), so Back
   goes GM inbox → Threadly. Tap → Threadly as you left it; hidden on `MainActivity.onResume`, screen off, or after
-  20 min; drag position remembered. Needs the user-granted `SYSTEM_ALERT_WINDOW` ("Display over other
+  20 min; drag position remembered. **Drag to dismiss**: while the chip is dragged, a ✕ circle
+  (`showDismissTarget`, its own untouchable overlay window) appears at the bottom centre; within
+  80 dp the chip snaps onto it, the ✕ grows and turns red, and letting go there hides the chip for
+  now (`dismiss`; the saved position isn't changed). The ⋮ menu toggle remains the permanent off.
+  Needs the user-granted `SYSTEM_ALERT_WINDOW` ("Display over other
   apps"); its Settings page is always the full app list since Android 11 (the per-app page is
   system-only). Offered once by a sheet on the first return from Messages (unless the nickname
   prompt is showing that time); toggled from the home screen's ⋮ menu. Preference + nudged flag in

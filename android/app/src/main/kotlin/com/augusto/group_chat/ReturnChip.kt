@@ -15,10 +15,12 @@ import android.os.Looper
 import android.provider.Settings
 import android.util.TypedValue
 import android.view.Gravity
+import android.view.HapticFeedbackConstants
 import android.view.MotionEvent
 import android.view.View
 import android.view.ViewConfiguration
 import android.view.WindowManager
+import android.widget.FrameLayout
 import android.widget.ImageView
 import android.widget.LinearLayout
 import android.widget.TextView
@@ -35,9 +37,11 @@ import kotlin.math.roundToInt
  * the user grants once in Settings; [show] is a no-op without it or when the
  * user turned the chip off.
  *
- * Hidden when Threadly resumes, on tap, when the screen turns off, or after
- * [AUTO_HIDE_MS] so it never lingers over unrelated apps. Process-lifetime
- * state only: the overlay window keeps the process alive while shown.
+ * Hidden when Threadly resumes, on tap, when dragged onto the ✕ that appears
+ * at the bottom of the screen during a drag, when the screen turns off, or
+ * after [AUTO_HIDE_MS] so it never lingers over unrelated apps.
+ * Process-lifetime state only: the overlay window keeps the process alive
+ * while shown.
  */
 object ReturnChip {
     private const val PREFS = "threadly_return_chip"
@@ -46,8 +50,16 @@ object ReturnChip {
     private const val KEY_X = "x"
     private const val KEY_Y = "y"
     private const val AUTO_HIDE_MS = 20L * 60 * 1000
+    /** The drag-to-dismiss ✕: its circle's diameter, and how close (centre to
+     *  centre) the chip has to come before it snaps on. */
+    private const val DISMISS_TARGET_DP = 56
+    private const val DISMISS_SNAP_DP = 80
+    private const val TARGET_IDLE = 0xD9212121.toInt()
+    private const val TARGET_ARMED = 0xF2B3261E.toInt() // M3 error red
 
     private var chip: View? = null
+    /** The ✕ window, up only while the chip is being dragged. */
+    private var dismissTarget: FrameLayout? = null
     private var screenOff: BroadcastReceiver? = null
 
     /** The conversation a notification tap opened, and when: Threadly blinks
@@ -178,6 +190,7 @@ object ReturnChip {
     }
 
     fun hide() {
+        hideDismissTarget()
         val view = chip ?: return
         chip = null
         handler.removeCallbacks(autoHide)
@@ -201,16 +214,28 @@ object ReturnChip {
         app.startActivity(intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK))
     }
 
-    /** Drag to move (position remembered); a touch that doesn't move is a tap. */
+    /**
+     * Drag to move (position remembered); a touch that doesn't move is a tap.
+     * While dragging, a ✕ appears at the bottom of the screen: the chip snaps
+     * onto it when close, and letting go there dismisses the chip for now (the
+     * ⋮ menu toggle is the permanent off).
+     */
     private fun attachDrag(
         view: View, wm: WindowManager, lp: WindowManager.LayoutParams, app: Context
     ) {
         val slop = ViewConfiguration.get(app).scaledTouchSlop
+        val snapRadius = dp(app, DISMISS_SNAP_DP)
+        val loc = IntArray(2)
         var downX = 0f
         var downY = 0f
         var startX = 0
         var startY = 0
+        // Screen = layout + origin: the overlay frame starts below the status
+        // bar, and the ✕ is hit-tested in screen coordinates.
+        var originX = 0
+        var originY = 0
         var moved = false
+        var inZone = false
         view.setOnTouchListener { v, ev ->
             when (ev.actionMasked) {
                 MotionEvent.ACTION_DOWN -> {
@@ -218,30 +243,131 @@ object ReturnChip {
                     downY = ev.rawY
                     startX = lp.x
                     startY = lp.y
+                    v.getLocationOnScreen(loc)
+                    originX = loc[0] - lp.x
+                    originY = loc[1] - lp.y
                     moved = false
+                    inZone = false
                     true
                 }
                 MotionEvent.ACTION_MOVE -> {
                     val dx = ev.rawX - downX
                     val dy = ev.rawY - downY
-                    if (!moved && hypot(dx, dy) > slop) moved = true
+                    if (!moved && hypot(dx, dy) > slop) {
+                        moved = true
+                        showDismissTarget(wm, app)
+                    }
                     if (moved) {
                         lp.x = (startX + dx).roundToInt()
                         lp.y = (startY + dy).roundToInt()
+                        val target = dismissTarget
+                        val near = target != null && target.width > 0 && run {
+                            target.getLocationOnScreen(loc)
+                            val tcx = loc[0] + target.width / 2
+                            val tcy = loc[1] + target.height / 2
+                            val ccx = lp.x + originX + v.width / 2
+                            val ccy = lp.y + originY + v.height / 2
+                            val close = hypot(
+                                (ccx - tcx).toFloat(), (ccy - tcy).toFloat()
+                            ) < snapRadius
+                            if (close) { // snap the chip onto the ✕
+                                lp.x = tcx - v.width / 2 - originX
+                                lp.y = tcy - v.height / 2 - originY
+                            }
+                            close
+                        }
+                        if (near != inZone) {
+                            inZone = near
+                            setDismissTargetArmed(near)
+                            if (near) v.performHapticFeedback(HapticFeedbackConstants.CLOCK_TICK)
+                        }
                         wm.updateViewLayout(v, lp)
                     }
                     true
                 }
-                MotionEvent.ACTION_UP -> {
-                    if (moved) {
-                        prefs(app).edit().putInt(KEY_X, lp.x).putInt(KEY_Y, lp.y).apply()
-                    } else {
-                        v.performClick()
+                MotionEvent.ACTION_UP, MotionEvent.ACTION_CANCEL -> {
+                    hideDismissTarget()
+                    when {
+                        !moved -> if (ev.actionMasked == MotionEvent.ACTION_UP) v.performClick()
+                        inZone -> dismiss(v)
+                        else -> prefs(app).edit().putInt(KEY_X, lp.x).putInt(KEY_Y, lp.y).apply()
                     }
                     true
                 }
                 else -> true
             }
+        }
+    }
+
+    /** Dropped on the ✕: shrink the chip away and take it down (for now). */
+    private fun dismiss(view: View) {
+        handler.removeCallbacks(autoHide)
+        view.animate().scaleX(0.2f).scaleY(0.2f).alpha(0f).setDuration(120)
+            .withEndAction { hide() }.start()
+    }
+
+    /**
+     * The ✕ at the bottom of the screen, shown once a drag starts. Its own
+     * untouchable overlay window, a bit larger than the circle so the armed
+     * (grown) state isn't clipped.
+     */
+    private fun showDismissTarget(wm: WindowManager, app: Context) {
+        if (dismissTarget != null) return
+        val size = dp(app, DISMISS_TARGET_DP)
+        val circle = FrameLayout(app)
+        circle.background = GradientDrawable().apply {
+            shape = GradientDrawable.OVAL
+            setColor(TARGET_IDLE)
+            setStroke(dp(app, 1), 0x66FFFFFF)
+        }
+        circle.elevation = dp(app, 6).toFloat()
+        val glyph = ImageView(app)
+        glyph.setImageResource(R.drawable.ic_dismiss_target)
+        val glyphSize = dp(app, 28)
+        glyph.layoutParams = FrameLayout.LayoutParams(glyphSize, glyphSize, Gravity.CENTER)
+        circle.addView(glyph)
+        val outer = FrameLayout(app)
+        outer.addView(circle, FrameLayout.LayoutParams(size, size, Gravity.CENTER))
+        val pad = dp(app, 12)
+        val lp = WindowManager.LayoutParams(
+            size + 2 * pad, size + 2 * pad,
+            WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY,
+            WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE or
+                WindowManager.LayoutParams.FLAG_NOT_TOUCHABLE or
+                WindowManager.LayoutParams.FLAG_NOT_TOUCH_MODAL,
+            PixelFormat.TRANSLUCENT
+        )
+        lp.gravity = Gravity.BOTTOM or Gravity.CENTER_HORIZONTAL
+        lp.y = dp(app, 40)
+        try {
+            wm.addView(outer, lp)
+        } catch (_: Exception) {
+            return // permission pulled under us; dragging still works
+        }
+        dismissTarget = outer
+        circle.alpha = 0f
+        circle.scaleX = 0.6f
+        circle.scaleY = 0.6f
+        circle.animate().alpha(1f).scaleX(1f).scaleY(1f).setDuration(150).start()
+    }
+
+    /** Grow and redden the ✕ while the chip is over it. */
+    private fun setDismissTargetArmed(armed: Boolean) {
+        val circle = dismissTarget?.getChildAt(0) ?: return
+        val scale = if (armed) 1.25f else 1f
+        circle.animate().scaleX(scale).scaleY(scale).setDuration(100).start()
+        (circle.background as? GradientDrawable)
+            ?.setColor(if (armed) TARGET_ARMED else TARGET_IDLE)
+    }
+
+    private fun hideDismissTarget() {
+        val target = dismissTarget ?: return
+        dismissTarget = null
+        try {
+            (target.context.getSystemService(Context.WINDOW_SERVICE) as WindowManager)
+                .removeView(target)
+        } catch (_: IllegalArgumentException) {
+            // Already gone.
         }
     }
 

@@ -32,7 +32,9 @@ want to read or reply.
   Google Messages returns you to the list where you left it, with the
   conversation you came from highlighted. It appears whenever you open a
   chat from Threadly, and also when you open one by tapping a Google
-  Messages notification, so a new text is one tap from being filed.
+  Messages notification, so a new text is one tap from being filed. Drag
+  it anywhere, or drag it onto the ✕ at the bottom of the screen to
+  dismiss it.
 - **Start group texts** from your contacts, named and filed under a category
   before the first message is even sent.
 - **Smart suggestions, on your phone**: from a conversation's recent messages,
