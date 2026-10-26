@@ -135,3 +135,7 @@ flutter build apk --debug
 Most behavior is platform-bound, so test on a real device or the Pixel
 emulator. [CLAUDE.md](CLAUDE.md) covers the architecture, the data model, the
 Google Messages deep-link details, and device-testing tips.
+
+## License
+
+[MIT](LICENSE).
